@@ -1,10 +1,10 @@
 <?xml version="1.0" encoding="utf-8"?>
 <resources>
-    <string name="app_name">TXT reader</string>
+    <string name="app_name">Vox TXT</string>
     <string name="open_txt">Отвори TXT</string>
     <string name="recent">Последни файлове</string>
     <string name="settings">Опции</string>
-    <string name="welcome">Отворете TXT файл, за да започнете</string>
+    <string name="welcome"></string>
     <string name="loading">Зареждане…</string>
     <string name="sentence_count">Изречение %1$d от %2$d</string>
     <string name="sentence_position">Изречение %1$d</string>

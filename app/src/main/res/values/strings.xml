@@ -1,10 +1,10 @@
 <?xml version="1.0" encoding="utf-8"?>
 <resources>
-    <string name="app_name">TXT Reader</string>
+    <string name="app_name">Vox TXT</string>
     <string name="open_txt">Open TXT</string>
     <string name="recent">Recent files</string>
     <string name="settings">Options</string>
-    <string name="welcome">Open a TXT file to begin</string>
+    <string name="welcome"></string>
     <string name="loading">Loading…</string>
     <string name="sentence_count">Sentence %1$d of %2$d</string>
     <string name="sentence_position">Sentence %1$d</string>

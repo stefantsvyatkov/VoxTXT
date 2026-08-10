@@ -46,7 +46,7 @@ public class ReaderService extends Service implements TextToSpeech.OnInitListene
     private String activeEngine = "";
     private boolean pendingPlay;
     private Listener listener;
-    private String text = "", title = "TXT Reader", uri = "";
+    private String text = "", title = "Vox TXT", uri = "";
     private int current;
     private boolean ready, playing;
     private long sleepDeadline;
@@ -182,14 +182,14 @@ public class ReaderService extends Service implements TextToSpeech.OnInitListene
         if (!playing || current >= sentences.size()) { pause(); return; }
         applySettings(); Range range = sentences.get(current);
         activeUtterance = "sentence-" + current + "-" + (++utteranceSerial); String utterance = activeUtterance;
-        Bundle parameters = new Bundle(); parameters.putFloat(TextToSpeech.Engine.KEY_PARAM_VOLUME, getSharedPreferences("reader_settings", MODE_PRIVATE).getInt("volume_percent", 100) / 100f);
+        Bundle parameters = new Bundle(); parameters.putFloat(TextToSpeech.Engine.KEY_PARAM_VOLUME, getSharedPreferences("reader_settings", MODE_PRIVATE).getInt("volume_percent", 50) / 100f);
         int result = tts.speak(text.substring(range.start, range.end).trim(), TextToSpeech.QUEUE_FLUSH, parameters, utterance);
         if (result == TextToSpeech.ERROR) { pause(); error(getString(R.string.tts_error)); }
         notifyState(); updateMediaSession(); updateNotification();
     }
     private void applySettings() {
         android.content.SharedPreferences p = getSharedPreferences("reader_settings", MODE_PRIVATE);
-        tts.setSpeechRate(speechRate(p.getInt("rate_percent", 50))); tts.setPitch(speechPitch(p.getInt("pitch_percent", 50)));
+        tts.setSpeechRate(speechRate(p.getInt("rate_percent", 20))); tts.setPitch(speechPitch(p.getInt("pitch_percent", 20)));
         String selectedVoice = p.getString(voicePreferenceKey(activeEngine), "");
         if (selectedVoice.isEmpty()) { Voice defaultVoice = tts.getDefaultVoice(); if (defaultVoice != null) tts.setVoice(defaultVoice); }
         else { Set<Voice> voices = tts.getVoices(); if (voices != null) for (Voice voice : voices) if (selectedVoice.equals(voice.getName())) { tts.setVoice(voice); break; } }
@@ -265,7 +265,7 @@ public class ReaderService extends Service implements TextToSpeech.OnInitListene
 
     private void createMediaSession() {
         audioManager = (AudioManager)getSystemService(AUDIO_SERVICE);
-        mediaSession = new MediaSession(this, "TXT Reader");
+        mediaSession = new MediaSession(this, "Vox TXT");
         mediaSession.setCallback(new MediaSession.Callback() {
             @Override public void onPlay() { if (!getSharedPreferences("reader_settings", MODE_PRIVATE).getBoolean("prevent_device_autoplay", true) || SystemClock.elapsedRealtime() >= suppressExternalPlayUntil) play(); }
             @Override public void onPause() { pause(); }

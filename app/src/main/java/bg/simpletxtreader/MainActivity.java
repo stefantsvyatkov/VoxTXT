@@ -146,7 +146,7 @@ public class MainActivity extends Activity implements ReaderService.Listener {
         status = label(getString(R.string.welcome), 17, false); status.setTextColor(appColor(R.color.text_secondary)); status.setPadding(0, dp(7), 0, dp(8)); sentenceRow.addView(status, new LinearLayout.LayoutParams(0, -2, 1));
         Button jump = compactButton(getString(R.string.go_to_sentence)); jump.setTextSize(uiSize(16)); jump.setOnClickListener(v -> showGoToSentenceDialog()); sentenceRow.addView(jump, new LinearLayout.LayoutParams(-2, dp(52))); root.addView(sentenceRow);
 
-        body = label("", 20, false); body.setTextSize(getSettings().getInt("font_size", 20)); body.setTextIsSelectable(false); body.setLongClickable(false); body.setLineSpacing(0, 1.3f); body.setPadding(pad, pad, pad, pad);
+        body = label("", 20, false); body.setTextSize(getSettings().getInt("font_size", 23)); body.setTextIsSelectable(false); body.setLongClickable(false); body.setLineSpacing(0, 1.3f); body.setPadding(pad, pad, pad, pad);
         body.setBackgroundColor(appColor(R.color.panel_bg));
         scroll = new LockedScrollView(this); scroll.setFillViewport(true); scroll.addView(body, new ScrollView.LayoutParams(-1, -2));
         LinearLayout.LayoutParams content = new LinearLayout.LayoutParams(-1, 0, 1); content.setMargins(0, dp(10), 0, dp(10)); root.addView(scroll, content);
@@ -315,7 +315,7 @@ public class MainActivity extends Activity implements ReaderService.Listener {
         AccessibleSpinner languageSpinner = new AccessibleSpinner(this); String[] languageValues = {"system", "en", "bg"}; String[] languageLabels = {getString(R.string.language_system), getString(R.string.language_english), getString(R.string.language_bulgarian)}; languageSpinner.setAdapter(themedSpinnerAdapter(languageLabels)); int languagePosition = Arrays.asList(languageValues).indexOf(p.getString("language", "system")); languageSpinner.setSelection(Math.max(0, languagePosition), false); box.addView(languageSpinner); configureSpinnerAccessibility(languageSpinner, languageLabels);
         TextView themeLabel = label(getString(R.string.theme), 18, true); themeLabel.setPadding(0, dp(12), 0, 0); box.addView(themeLabel);
         AccessibleSpinner themeSpinner = new AccessibleSpinner(this); String[] themeValues = {"system", "light", "dark"}; String[] themeLabels = {getString(R.string.theme_system), getString(R.string.theme_light), getString(R.string.theme_dark)}; themeSpinner.setAdapter(themedSpinnerAdapter(themeLabels)); int themePosition = Arrays.asList(themeValues).indexOf(p.getString("theme", "system")); themeSpinner.setSelection(Math.max(0, themePosition), false); box.addView(themeSpinner); configureSpinnerAccessibility(themeSpinner, themeLabels);
-        SeekBar font = seek(box, R.string.document_font_size, 14, 32, p.getInt("font_size", 20));
+        SeekBar font = seek(box, R.string.document_font_size, 14, 32, p.getInt("font_size", 23));
         TextView interfaceLabel = label(getString(R.string.interface_font_size), 18, true); interfaceLabel.setPadding(0, dp(12), 0, 0); box.addView(interfaceLabel); SeekBar interfaceFont = new SeekBar(this); interfaceFont.setMax(20); int originalInterfaceScale = p.getInt("interface_scale", 100); interfaceFont.setProgress(Math.max(0, Math.min(20, (originalInterfaceScale - 50) / 5))); box.addView(interfaceFont);
         CheckBox pauseForSettings = new CheckBox(this); pauseForSettings.setText(R.string.pause_for_settings); pauseForSettings.setTextSize(uiSize(18)); pauseForSettings.setChecked(p.getBoolean("pause_for_settings", true)); pauseForSettings.setPadding(0, dp(10), 0, dp(6)); box.addView(pauseForSettings, new LinearLayout.LayoutParams(-1, -2));
         CheckBox seekVibration = new CheckBox(this); seekVibration.setText(R.string.seek_vibration); seekVibration.setTextSize(uiSize(18)); seekVibration.setChecked(p.getBoolean("seek_vibration", true)); seekVibration.setPadding(0, dp(6), 0, dp(10)); box.addView(seekVibration, new LinearLayout.LayoutParams(-1, -2));
@@ -356,9 +356,9 @@ public class MainActivity extends Activity implements ReaderService.Listener {
                 languageLabel.setVisibility(View.VISIBLE); languageSpinner.setVisibility(View.VISIBLE); voiceLabel.setVisibility(View.VISIBLE); voiceSpinner.setVisibility(View.VISIBLE);
             }));
         });
-        PercentSeekBar rate = percentSeek(box, R.string.speech_rate, p.getInt("rate_percent", 50));
-        PercentSeekBar pitch = percentSeek(box, R.string.pitch, p.getInt("pitch_percent", 50));
-        PercentSeekBar volume = percentSeek(box, R.string.volume, p.getInt("volume_percent", 100));
+        PercentSeekBar rate = percentSeek(box, R.string.speech_rate, p.getInt("rate_percent", 20));
+        PercentSeekBar pitch = percentSeek(box, R.string.pitch, p.getInt("pitch_percent", 20));
+        PercentSeekBar volume = percentSeek(box, R.string.volume, p.getInt("volume_percent", 50));
         SeekBar gap = millisecondSeek(box, p.getInt("sentence_pause", 0));
         Runnable applyVoice = () -> { ReaderService.EngineOption engine = engines.get(engineSpinner.getSelectedItemPosition()); String voiceName = voiceSelection.visible.isEmpty() || voiceSpinner.getSelectedItemPosition() < 0 ? "" : voiceSelection.visible.get(Math.min(voiceSpinner.getSelectedItemPosition(), voiceSelection.visible.size() - 1)).name; p.edit().putString("engine", engine.name).putString(ReaderService.voicePreferenceKey(engine.name), voiceName).remove("voice").remove("rate").remove("pitch").putInt("rate_percent", rate.percent()).putInt("pitch_percent", pitch.percent()).putInt("volume_percent", volume.percent()).putInt("sentence_pause", seekValue(gap)).apply(); boolean restartAfterApply = reader.isPlaying(); reader.updateSettings(false); closeRecent(); if (restartAfterApply) scheduleAutomaticPlayback(); };
         Runnable closeVoice = () -> {};

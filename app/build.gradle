@@ -1,19 +1,79 @@
 plugins { id 'com.android.application' }
 
+import java.util.Properties
+import java.util.Base64
+
+def signingPropertiesFile = [
+    rootProject.file('sign/signing.properties'),
+    rootProject.file('signing.properties')
+].find { it.exists() }
+def signingProperties = new Properties()
+if (signingPropertiesFile != null) {
+    signingPropertiesFile.withInputStream { signingProperties.load(it) }
+}
+
+def releaseRequested = gradle.startParameter.taskNames.any { it.toLowerCase(Locale.ROOT).contains('release') }
+if (releaseRequested && signingPropertiesFile == null) {
+    throw new GradleException('Release signing is not configured. Run setup-release-signing.ps1 first.')
+}
+
+def releaseNumberFile = rootProject.file('release-build-number.properties')
+def releaseNumberProperties = new Properties()
+if (releaseNumberFile.exists()) {
+    releaseNumberFile.withInputStream { releaseNumberProperties.load(it) }
+}
+def releaseBuildNumber = Math.max(1, (releaseNumberProperties.getProperty('nextNumber', '1') as int))
+def decodeSigningSecret = { String encoded -> new String(Base64.decoder.decode(encoded), 'UTF-8') }
+
 android {
     namespace 'bg.simpletxtreader'
     compileSdk { version = release(37) }
 
     defaultConfig {
-        applicationId 'bg.simpletxtreader'
+        applicationId 'bg.stefantsvyatkov.voxtxt'
         minSdk 26
         targetSdk { version = release(37) }
         versionCode 1
         versionName '1.0'
     }
 
+    signingConfigs {
+        if (signingPropertiesFile != null) {
+            release {
+                storeFile new File(signingPropertiesFile.parentFile, signingProperties.getProperty('storeFile'))
+                storePassword decodeSigningSecret(signingProperties.getProperty('storePasswordBase64'))
+                keyAlias signingProperties.getProperty('keyAlias')
+                keyPassword decodeSigningSecret(signingProperties.getProperty('keyPasswordBase64'))
+            }
+        }
+    }
+
+    buildTypes {
+        release {
+            if (signingPropertiesFile != null) {
+                signingConfig signingConfigs.release
+            }
+        }
+    }
+
     compileOptions {
         sourceCompatibility JavaVersion.VERSION_17
         targetCompatibility JavaVersion.VERSION_17
+    }
+}
+
+androidComponents {
+    onVariants(selector().withBuildType('release')) { variant ->
+        variant.outputs.each { output ->
+            output.outputFileName.set("VoxTXT ${releaseBuildNumber}.apk")
+        }
+    }
+}
+
+tasks.matching { it.name == 'assembleRelease' }.configureEach {
+    doLast {
+        def updated = new Properties()
+        updated.setProperty('nextNumber', String.valueOf(releaseBuildNumber + 1))
+        releaseNumberFile.withOutputStream { updated.store(it, 'Next local Vox TXT release APK number') }
     }
 }
