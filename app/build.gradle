@@ -65,7 +65,7 @@ android {
 androidComponents {
     onVariants(selector().withBuildType('release')) { variant ->
         variant.outputs.each { output ->
-            output.outputFileName.set("VoxTXT ${releaseBuildNumber}.apk")
+            output.outputFileName.set("VoxTXT-beta1.apk")
         }
     }
 }

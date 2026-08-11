@@ -24,6 +24,7 @@
     <string name="pitch">Височина на гласа</string>
     <string name="volume">Сила на звука</string>
     <string name="sentence_pause">Пауза между изреченията</string>
+    <string name="fast_seek_interval">Интервал за бързо превъртане</string>
     <string name="milliseconds_value">%1$d милисекунди</string>
     <string name="document_font_size">Размер на текста във файла</string>
     <string name="interface_font_size">Размер на текста в интерфейса</string>
@@ -62,6 +63,7 @@
     <string name="file_empty">Файлът е празен.</string>
     <string name="file_unavailable">Файлът не е достъпен.</string>
     <string name="open_failed">Файлът не може да бъде отворен.</string>
+    <string name="txt_files_only">Могат да се отварят само .txt файлове.</string>
     <string name="tts_unavailable">Text-to-Speech не е наличен. Инсталирайте или активирайте глас от настройките на Android.</string>
     <string name="tts_error">Системният глас не успя да прочете текста. Опитайте друг инсталиран глас.</string>
     <string name="notification_text">Чете изречение %1$d от %2$d</string>

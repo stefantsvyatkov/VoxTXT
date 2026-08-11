@@ -201,9 +201,11 @@ public class MainActivity extends Activity implements ReaderService.Listener {
         if (loading) return; loading = true; if (reader != null) reader.pause(); status.setText(R.string.loading); updateControls();
         io.execute(() -> {
             try {
+                String fileName = displayFileName(uri);
+                if (fileName == null || !fileName.toLowerCase(Locale.ROOT).endsWith(".txt")) throw new IOException(getString(R.string.txt_files_only));
                 byte[] bytes = readLimited(uri); String loaded = decode(bytes).replace("\r\n", "\n").replace('\r', '\n');
                 if (loaded.trim().isEmpty()) throw new IOException(getString(R.string.file_empty));
-                String name = displayName(uri); runOnUiThread(() -> {
+                String name = withoutTxtExtension(fileName); runOnUiThread(() -> {
                     if (destroyed) return; currentUri = uri.toString(); currentName = name; title.setText(name); title.setVisibility(View.VISIBLE); title.setPadding(0, 0, 0, dp(8)); loading = false;
                     if (remember) getPreferences(MODE_PRIVATE).edit().putString("last_uri", currentUri).apply();
                     addRecent(currentUri, currentName); if (reader == null) pendingText = loaded; else finishLoad(loaded);
@@ -225,9 +227,10 @@ public class MainActivity extends Activity implements ReaderService.Listener {
         try { return StandardCharsets.UTF_8.newDecoder().onMalformedInput(CodingErrorAction.REPORT).decode(ByteBuffer.wrap(b)).toString(); }
         catch (CharacterCodingException e) { return new String(b, Charset.forName("windows-1252")); }
     }
-    private String displayName(Uri uri) {
-        try (android.database.Cursor c = getContentResolver().query(uri, new String[]{OpenableColumns.DISPLAY_NAME}, null, null, null)) { if (c != null && c.moveToFirst()) return withoutTxtExtension(c.getString(0)); }
-        catch (Exception ignored) {} return getString(R.string.app_name);
+    private String displayFileName(Uri uri) {
+        try (android.database.Cursor c = getContentResolver().query(uri, new String[]{OpenableColumns.DISPLAY_NAME}, null, null, null)) { if (c != null && c.moveToFirst()) return c.getString(0); }
+        catch (Exception ignored) {}
+        String segment = uri.getLastPathSegment(); return segment == null ? null : Uri.decode(segment);
     }
     private String withoutTxtExtension(String value) { return value != null && value.toLowerCase(Locale.ROOT).endsWith(".txt") ? value.substring(0, value.length() - 4) : value; }
 
@@ -290,7 +293,7 @@ public class MainActivity extends Activity implements ReaderService.Listener {
         button.setOnLongClickListener(v -> {
             if (reader == null || reader.getCount() == 0) return false;
             fastSeeking = true; resumeAfterFastSeek = reader.isPlaying(); if (resumeAfterFastSeek) reader.pause();
-            Runnable repeated = new Runnable() { @Override public void run() { if (!fastSeeking || reader == null) return; reader.move(direction * 5); if (getSettings().getBoolean("seek_vibration", true)) button.performHapticFeedback(HapticFeedbackConstants.CLOCK_TICK); seekHandler.postDelayed(this, 150); } };
+            Runnable repeated = new Runnable() { @Override public void run() { if (!fastSeeking || reader == null) return; reader.move(direction * 5); if (getSettings().getBoolean("seek_vibration", true)) button.performHapticFeedback(HapticFeedbackConstants.CLOCK_TICK); seekHandler.postDelayed(this, getSettings().getInt("fast_seek_interval", 200)); } };
             repeated.run(); return true;
         });
         button.setOnTouchListener((v, event) -> { if ((event.getAction() == MotionEvent.ACTION_UP || event.getAction() == MotionEvent.ACTION_CANCEL) && fastSeeking) { fastSeeking = false; seekHandler.removeCallbacksAndMessages(null); boolean resume = resumeAfterFastSeek; resumeAfterFastSeek = false; announceCurrentSentence(); if (resume && reader != null) scheduleAutomaticPlayback(); } return false; });
@@ -317,6 +320,7 @@ public class MainActivity extends Activity implements ReaderService.Listener {
         AccessibleSpinner themeSpinner = new AccessibleSpinner(this); String[] themeValues = {"system", "light", "dark"}; String[] themeLabels = {getString(R.string.theme_system), getString(R.string.theme_light), getString(R.string.theme_dark)}; themeSpinner.setAdapter(themedSpinnerAdapter(themeLabels)); int themePosition = Arrays.asList(themeValues).indexOf(p.getString("theme", "system")); themeSpinner.setSelection(Math.max(0, themePosition), false); box.addView(themeSpinner); configureSpinnerAccessibility(themeSpinner, themeLabels);
         SeekBar font = seek(box, R.string.document_font_size, 14, 32, p.getInt("font_size", 23));
         TextView interfaceLabel = label(getString(R.string.interface_font_size), 18, true); interfaceLabel.setPadding(0, dp(12), 0, 0); box.addView(interfaceLabel); SeekBar interfaceFont = new SeekBar(this); interfaceFont.setMax(20); int originalInterfaceScale = p.getInt("interface_scale", 100); interfaceFont.setProgress(Math.max(0, Math.min(20, (originalInterfaceScale - 50) / 5))); box.addView(interfaceFont);
+        SeekBar fastSeekInterval = millisecondSeek(box, R.string.fast_seek_interval, 100, 500, 50, p.getInt("fast_seek_interval", 200));
         CheckBox pauseForSettings = new CheckBox(this); pauseForSettings.setText(R.string.pause_for_settings); pauseForSettings.setTextSize(uiSize(18)); pauseForSettings.setChecked(p.getBoolean("pause_for_settings", true)); pauseForSettings.setPadding(0, dp(10), 0, dp(6)); box.addView(pauseForSettings, new LinearLayout.LayoutParams(-1, -2));
         CheckBox seekVibration = new CheckBox(this); seekVibration.setText(R.string.seek_vibration); seekVibration.setTextSize(uiSize(18)); seekVibration.setChecked(p.getBoolean("seek_vibration", true)); seekVibration.setPadding(0, dp(6), 0, dp(10)); box.addView(seekVibration, new LinearLayout.LayoutParams(-1, -2));
         CheckBox preventDeviceAutoplay = new CheckBox(this); preventDeviceAutoplay.setText(R.string.prevent_device_autoplay); preventDeviceAutoplay.setTextSize(uiSize(18)); preventDeviceAutoplay.setChecked(p.getBoolean("prevent_device_autoplay", true)); preventDeviceAutoplay.setPadding(0, dp(6), 0, dp(10)); box.addView(preventDeviceAutoplay, new LinearLayout.LayoutParams(-1, -2));
@@ -327,7 +331,7 @@ public class MainActivity extends Activity implements ReaderService.Listener {
         });
         Runnable applyOptions = () -> {
             int fontValue = seekValue(font), interfaceValue = 50 + interfaceFont.getProgress() * 5; String selectedTheme = themeValues[themeSpinner.getSelectedItemPosition()], selectedLanguage = languageValues[languageSpinner.getSelectedItemPosition()]; boolean themeChanged = !selectedTheme.equals(p.getString("theme", "system")), languageChanged = !selectedLanguage.equals(p.getString("language", "system"));
-            p.edit().putInt("font_size", fontValue).putInt("interface_scale", interfaceValue).putString("theme", selectedTheme).putString("language", selectedLanguage).putBoolean("pause_for_settings", pauseForSettings.isChecked()).putBoolean("seek_vibration", seekVibration.isChecked()).putBoolean("prevent_device_autoplay", preventDeviceAutoplay.isChecked()).apply(); keepPreview[0] = true; body.setTextSize(fontValue); if (languageChanged) applyLanguage(selectedLanguage); if (themeChanged || languageChanged) { resumeAfterRecreate = pausedAutomaticallyOutsideReader; pausedAutomaticallyOutsideReader = false; subpageCloseAction = null; getWindow().getDecorView().post(this::recreate); } else closeRecent();
+            p.edit().putInt("font_size", fontValue).putInt("interface_scale", interfaceValue).putInt("fast_seek_interval", seekValue(fastSeekInterval)).putString("theme", selectedTheme).putString("language", selectedLanguage).putBoolean("pause_for_settings", pauseForSettings.isChecked()).putBoolean("seek_vibration", seekVibration.isChecked()).putBoolean("prevent_device_autoplay", preventDeviceAutoplay.isChecked()).apply(); keepPreview[0] = true; body.setTextSize(fontValue); if (languageChanged) applyLanguage(selectedLanguage); if (themeChanged || languageChanged) { resumeAfterRecreate = pausedAutomaticallyOutsideReader; pausedAutomaticallyOutsideReader = false; subpageCloseAction = null; getWindow().getDecorView().post(this::recreate); } else closeRecent();
         };
         Runnable closeOptions = () -> { if (!keepPreview[0] && previewScale[0] != originalInterfaceScale) previewInterfaceScale(previewScale[0], originalInterfaceScale, null); };
         showSettingsPage(R.string.settings, box, applyOptions, closeOptions);
@@ -390,7 +394,8 @@ public class MainActivity extends Activity implements ReaderService.Listener {
     }
     private void setMillisecondsDescription(SeekBar gap) { setSliderValueDescription(gap, getString(R.string.milliseconds_value, seekValue(gap))); gap.setOnSeekBarChangeListener(new SeekBar.OnSeekBarChangeListener() { public void onStartTrackingTouch(SeekBar s) {} public void onStopTrackingTouch(SeekBar s) {} public void onProgressChanged(SeekBar s, int progress, boolean fromUser) { setSliderValueDescription(s, getString(R.string.milliseconds_value, seekValue(s))); } }); }
     private void setSliderValueDescription(SeekBar seek, String value) { if (Build.VERSION.SDK_INT >= 30) { seek.setContentDescription(null); seek.setStateDescription(value); } else seek.setContentDescription(value); }
-    private SeekBar millisecondSeek(LinearLayout box, int value) { TextView label = label(getString(R.string.sentence_pause), 18, true); label.setPadding(0, dp(12), 0, 0); box.addView(label); SeekBar seek = new SeekBar(this); seek.setTag(new SeekRange(0, 2000)); seek.setMax(20); seek.setProgress(Math.round(value * 20f / 2000f)); box.addView(seek); setMillisecondsDescription(seek); return seek; }
+    private SeekBar millisecondSeek(LinearLayout box, int value) { return millisecondSeek(box, R.string.sentence_pause, 0, 2000, 100, value); }
+    private SeekBar millisecondSeek(LinearLayout box, int labelResource, int min, int max, int step, int value) { TextView label = label(getString(labelResource), 18, true); label.setPadding(0, dp(12), 0, 0); box.addView(label); SeekBar seek = new SeekBar(this); seek.setTag(new SeekRange(min, max)); seek.setMax((max - min) / step); seek.setProgress(Math.max(0, Math.min(seek.getMax(), Math.round((value - min) / (float)step)))); box.addView(seek); setMillisecondsDescription(seek); return seek; }
     private void configureSpinnerAccessibility(AccessibleSpinner spinner, String[] values) {
         configureSpinnerAccessibility(spinner, values, null);
     }
@@ -425,7 +430,7 @@ public class MainActivity extends Activity implements ReaderService.Listener {
     private void focusDialogTitle(AlertDialog dialog) { View titleView = dialog.findViewById(getResources().getIdentifier("alertTitle", "id", "android")); if (titleView != null) { if (Build.VERSION.SDK_INT >= 28) titleView.setAccessibilityHeading(true); titleView.postDelayed(() -> titleView.performAccessibilityAction(android.view.accessibility.AccessibilityNodeInfo.ACTION_ACCESSIBILITY_FOCUS, null), 220L); } }
     private void focusHeading(View heading) { heading.postDelayed(() -> heading.performAccessibilityAction(android.view.accessibility.AccessibilityNodeInfo.ACTION_ACCESSIBILITY_FOCUS, null), 220L); }
     private ArrayAdapter<String> themedSpinnerAdapter(String[] values) { return new ArrayAdapter<String>(this, android.R.layout.simple_spinner_item, values) { private View style(View view, boolean dropdown) { if (view instanceof TextView) { ((TextView)view).setTextColor(appColor(R.color.text_primary)); ((TextView)view).setTextSize(uiSize(18)); view.setBackgroundColor(appColor(R.color.window_bg)); view.setPadding(dp(12), dp(12), dp(12), dp(12)); view.setImportantForAccessibility(dropdown ? View.IMPORTANT_FOR_ACCESSIBILITY_YES : View.IMPORTANT_FOR_ACCESSIBILITY_NO); view.setAccessibilityDelegate(new View.AccessibilityDelegate() { @Override public void onInitializeAccessibilityNodeInfo(View host, android.view.accessibility.AccessibilityNodeInfo info) { super.onInitializeAccessibilityNodeInfo(host, info); info.setCollectionItemInfo(null); } }); } return view; } @Override public View getView(int position, View convertView, ViewGroup parent) { return style(super.getView(position, convertView, parent), false); } @Override public View getDropDownView(int position, View convertView, ViewGroup parent) { return style(super.getDropDownView(position, convertView, parent), true); } }; }
-    private int seekValue(SeekBar seek) { SeekRange range = (SeekRange)seek.getTag(); return Math.round(range.min + seek.getProgress() * (range.max - range.min) / 20f); }
+    private int seekValue(SeekBar seek) { SeekRange range = (SeekRange)seek.getTag(); return Math.round(range.min + seek.getProgress() * (range.max - range.min) / (float)seek.getMax()); }
     private void applySavedLanguage() { applyLanguage(getSharedPreferences("reader_settings", MODE_PRIVATE).getString("language", "system")); }
     private void applyLanguage(String language) {
         if (Build.VERSION.SDK_INT >= 33) { android.os.LocaleList locales = "system".equals(language) ? android.os.LocaleList.getEmptyLocaleList() : android.os.LocaleList.forLanguageTags(language); android.app.LocaleManager manager = getSystemService(android.app.LocaleManager.class); if (manager != null && !manager.getApplicationLocales().equals(locales)) manager.setApplicationLocales(locales); }

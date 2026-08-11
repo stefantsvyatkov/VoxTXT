@@ -24,6 +24,7 @@
     <string name="pitch">Voice pitch</string>
     <string name="volume">Volume</string>
     <string name="sentence_pause">Pause between sentences</string>
+    <string name="fast_seek_interval">Fast seek interval</string>
     <string name="milliseconds_value">%1$d milliseconds</string>
     <string name="document_font_size">Document text size</string>
     <string name="interface_font_size">Interface text size</string>
@@ -62,6 +63,7 @@
     <string name="file_empty">The file is empty.</string>
     <string name="file_unavailable">The file is unavailable.</string>
     <string name="open_failed">Could not open this file.</string>
+    <string name="txt_files_only">Only .txt files can be opened.</string>
     <string name="tts_unavailable">Text-to-Speech is unavailable. Install or enable a voice in Android settings.</string>
     <string name="tts_error">The system voice could not read the text. Try another installed voice.</string>
     <string name="notification_text">Reading sentence %1$d of %2$d</string>
