@@ -129,6 +129,10 @@ public class ReaderService extends Service implements TextToSpeech.OnInitListene
         split(); current = Math.min(current, Math.max(0, sentences.size() - 1));
         savePosition(); notifyState();
     }
+    public void clearDocument() {
+        pause(); uri = ""; title = ""; text = ""; current = 0; sentences.clear();
+        notifyState(); updateMediaSession(); stopForeground(true);
+    }
     public void play() {
         if (sleepRewindAvailable) { sleepRewindAvailable = false; completedSleepMinutes = 0; notifyState(); }
         if (!ready) { pendingPlay = true; return; }

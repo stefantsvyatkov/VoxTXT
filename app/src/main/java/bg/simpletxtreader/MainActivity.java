@@ -45,6 +45,10 @@ public class MainActivity extends Activity implements ReaderService.Listener {
     private static class VoiceSelection { ArrayList<ReaderService.VoiceOption> all = new ArrayList<>(), visible = new ArrayList<>(); }
     private static class LanguageOption { final String tag, label; LanguageOption(String tag, String label) { this.tag = tag; this.label = label; } }
     private static class SeekRange { final int min, max; SeekRange(int min, int max) { this.min = min; this.max = max; } }
+    private static class RecentDocument {
+        final String uri, name, text;
+        RecentDocument(String uri, String name, String text) { this.uri = uri; this.name = name; this.text = text; }
+    }
     private class AccessibleSpinner extends Spinner {
         private boolean selectionFromPopup;
         AccessibleSpinner(Context context) { super(context); }
@@ -107,23 +111,12 @@ public class MainActivity extends Activity implements ReaderService.Listener {
         bindService(new Intent(this, ReaderService.class), connection, BIND_AUTO_CREATE);
         if (Build.VERSION.SDK_INT >= 33 && checkSelfPermission(Manifest.permission.POST_NOTIFICATIONS) != PackageManager.PERMISSION_GRANTED)
             requestPermissions(new String[]{Manifest.permission.POST_NOTIFICATIONS}, 11);
-        Uri incoming = incomingTextUri(getIntent());
+        Uri incoming = Intent.ACTION_VIEW.equals(getIntent().getAction()) ? getIntent().getData() : null;
         if (incoming != null) loadUri(incoming, true);
         else {
             String last = getPreferences(MODE_PRIVATE).getString("last_uri", "");
             if (!last.isEmpty()) loadUri(Uri.parse(last), false);
         }
-    }
-
-    @SuppressWarnings("deprecation")
-    private Uri incomingTextUri(Intent intent) {
-        if (intent == null) return null;
-        if (Intent.ACTION_VIEW.equals(intent.getAction())) return intent.getData();
-        if (Intent.ACTION_SEND.equals(intent.getAction())) {
-            if (Build.VERSION.SDK_INT >= 33) return intent.getParcelableExtra(Intent.EXTRA_STREAM, Uri.class);
-            return intent.getParcelableExtra(Intent.EXTRA_STREAM);
-        }
-        return null;
     }
 
     private void buildUi() {
@@ -480,7 +473,55 @@ public class MainActivity extends Activity implements ReaderService.Listener {
         try { JSONArray old = new JSONArray(getPreferences(MODE_PRIVATE).getString("recent", "[]")), fresh = new JSONArray(); for (int i = 0; i < old.length(); i++) if (!itemUri.equals(old.getJSONObject(i).optString("uri"))) fresh.put(old.getJSONObject(i)); getPreferences(MODE_PRIVATE).edit().putString("recent", fresh.toString()).apply(); showRecent(); }
         catch (JSONException e) { toast(getString(R.string.no_recent)); }
     }
-    private void closeRecent() { if (!showingRecent) return; Runnable action = subpageCloseAction; subpageCloseAction = null; if (action != null) action.run(); buildUi(); if (reader != null) reader.setListener(this); returnToReader(); }
+    private void closeRecent() {
+        if (!showingRecent || loading) return;
+        Runnable action = subpageCloseAction; subpageCloseAction = null; if (action != null) action.run();
+        loading = true;
+        io.execute(() -> {
+            RecentDocument selected = selectDocumentForReader();
+            runOnUiThread(() -> {
+                if (destroyed) return;
+                loading = false;
+                if (selected == null) clearCurrentDocument();
+                else if (!selected.uri.equals(currentUri)) {
+                    currentUri = selected.uri; currentName = selected.name;
+                    getPreferences(MODE_PRIVATE).edit().putString("last_uri", currentUri).apply();
+                    if (reader == null) pendingText = selected.text; else finishLoad(selected.text);
+                }
+                buildUi(); if (reader != null) reader.setListener(this); returnToReader();
+            });
+        });
+    }
+    private RecentDocument selectDocumentForReader() {
+        try {
+            JSONArray recent = new JSONArray(getPreferences(MODE_PRIVATE).getString("recent", "[]"));
+            for (int i = 0; i < Math.min(10, recent.length()); i++) {
+                JSONObject item = recent.getJSONObject(i); String uri = item.optString("uri");
+                if (uri.isEmpty() || (!currentUri.isEmpty() && !currentUri.equals(uri))) continue;
+                RecentDocument document = readRecentDocument(item); if (document != null) return document;
+            }
+            for (int i = 0; i < Math.min(10, recent.length()); i++) {
+                JSONObject item = recent.getJSONObject(i); if (currentUri.equals(item.optString("uri"))) continue;
+                RecentDocument document = readRecentDocument(item); if (document != null) return document;
+            }
+        } catch (JSONException ignored) {}
+        return null;
+    }
+    private RecentDocument readRecentDocument(JSONObject item) {
+        try {
+            String uriValue = item.optString("uri"); Uri uri = Uri.parse(uriValue); String fileName = displayFileName(uri);
+            if (fileName == null || !fileName.toLowerCase(Locale.ROOT).endsWith(".txt")) return null;
+            String loaded = decode(readLimited(uri)).replace("\r\n", "\n").replace('\r', '\n');
+            if (loaded.trim().isEmpty()) return null;
+            String savedName = item.optString("name");
+            return new RecentDocument(uriValue, withoutTxtExtension(savedName.isEmpty() ? fileName : savedName), loaded);
+        } catch (Exception ignored) { return null; }
+    }
+    private void clearCurrentDocument() {
+        cancelAutomaticResume(true); resumeAfterFilePickerLoad = false; pendingText = null; currentUri = ""; currentName = "";
+        getPreferences(MODE_PRIVATE).edit().remove("last_uri").apply();
+        if (reader != null) reader.clearDocument();
+    }
     @android.annotation.SuppressLint("GestureBackNavigation")
     @Override public void onBackPressed() { if (showingRecent) closeRecent(); else super.onBackPressed(); }
     @Override protected void onSaveInstanceState(Bundle outState) { outState.putBoolean(STATE_RESUME_AFTER_RECREATE, resumeAfterRecreate); super.onSaveInstanceState(outState); }
