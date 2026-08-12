@@ -26,7 +26,8 @@ public class MainActivity extends Activity implements ReaderService.Listener {
     private static final String STATE_RESUME_AFTER_RECREATE = "resume_after_recreate";
     private final ExecutorService io = Executors.newSingleThreadExecutor();
     private TextView appHeading, title, status, body;
-    private ImageButton voiceButton, previous, play, next, sleepButton, sleepRewindButton;
+    private ImageButton voiceButton, previous, play, next, sleepButton;
+    private Button sleepRewindButton;
     private SeekBar bookProgress;
     private ScrollView scroll;
     private View appRoot;
@@ -96,11 +97,12 @@ public class MainActivity extends Activity implements ReaderService.Listener {
     private final ServiceConnection connection = new ServiceConnection() {
         @Override public void onServiceConnected(ComponentName name, android.os.IBinder service) {
             reader = ((ReaderService.ReaderBinder)service).service(); bound = true; reader.setListener(MainActivity.this);
+            setMediaController(reader.getMediaController());
             if (pendingText != null) { finishLoad(pendingText); pendingText = null; }
             if (resumeAfterRecreate) { resumeAfterRecreate = false; scheduleAutomaticPlayback(); }
             updateControls();
         }
-        @Override public void onServiceDisconnected(ComponentName name) { bound = false; reader = null; updateControls(); }
+        @Override public void onServiceDisconnected(ComponentName name) { setMediaController(null); bound = false; reader = null; updateControls(); }
     };
 
     @Override public void onCreate(Bundle state) {
@@ -145,9 +147,8 @@ public class MainActivity extends Activity implements ReaderService.Listener {
         scroll = new LockedScrollView(this); scroll.setFillViewport(true); scroll.addView(body, new ScrollView.LayoutParams(-1, -2));
         LinearLayout.LayoutParams content = new LinearLayout.LayoutParams(-1, 0, 1); content.setMargins(0, dp(10), 0, dp(10)); root.addView(scroll, content);
 
-        LinearLayout playerPanel = new LinearLayout(this); playerPanel.setOrientation(LinearLayout.VERTICAL); playerPanel.setGravity(Gravity.CENTER); playerPanel.setPadding(dp(12), dp(6), dp(12), dp(8)); playerPanel.setBackgroundColor(appColor(R.color.panel_bg));
-        LinearLayout progressRow = new LinearLayout(this); progressRow.setGravity(Gravity.CENTER_VERTICAL);
-        LinearLayout progressHeader = new LinearLayout(this); progressHeader.setGravity(Gravity.CENTER_VERTICAL); TextView progressLabel = label(getString(R.string.book_progress), 17, true); TextView progressValue = valueLabel(); progressHeader.addView(progressLabel, new LinearLayout.LayoutParams(0, -2, 1)); progressHeader.addView(progressValue, new LinearLayout.LayoutParams(-2, -2)); LinearLayout progressHeaderRow = new LinearLayout(this); progressHeaderRow.addView(progressHeader, new LinearLayout.LayoutParams(0, -2, 4)); progressHeaderRow.addView(new Space(this), new LinearLayout.LayoutParams(0, 1, 1)); playerPanel.addView(progressHeaderRow, new LinearLayout.LayoutParams(-1, -2));
+        LinearLayout playerPanel = new LinearLayout(this); playerPanel.setOrientation(LinearLayout.VERTICAL); playerPanel.setGravity(Gravity.BOTTOM); playerPanel.setPadding(dp(12), 0, dp(12), 0); playerPanel.setBackgroundColor(appColor(R.color.panel_bg));
+        TextView progressValue = addSliderHeader(playerPanel, R.string.book_progress, 17, 0);
         bookProgress = new BookProgressSeekBar(this);
         sliderValues.put(bookProgress, progressValue);
         bookProgress.setOnSeekBarChangeListener(new SeekBar.OnSeekBarChangeListener() {
@@ -156,17 +157,17 @@ public class MainActivity extends Activity implements ReaderService.Listener {
             public void onProgressChanged(SeekBar seekBar, int progress, boolean fromUser) { updateBookProgressDescription(progress); if (fromUser && !updatingBookProgress) seekToBookPercent(progress, false); }
         });
         LinearLayout playerButtons = new LinearLayout(this); playerButtons.setGravity(Gravity.CENTER);
-        voiceButton = imageButton(R.drawable.ic_voice, R.string.choose_voice); previous = imageButton(R.drawable.ic_previous, R.string.previous_sentence); play = imageButton(R.drawable.ic_play, R.string.play_sentence); next = imageButton(R.drawable.ic_next, R.string.next_sentence); sleepButton = imageButton(R.drawable.ic_sleep, R.string.open_sleep_timer); sleepRewindButton = imageButton(R.drawable.ic_rewind_timer, R.string.rewind_sleep_timer);
+        voiceButton = imageButton(R.drawable.ic_voice, R.string.choose_voice); previous = imageButton(R.drawable.ic_previous, R.string.previous_sentence); play = imageButton(R.drawable.ic_play, R.string.play_sentence); next = imageButton(R.drawable.ic_next, R.string.next_sentence); sleepButton = imageButton(R.drawable.ic_sleep, R.string.open_sleep_timer); sleepRewindButton = button("");
         voiceButton.setOnClickListener(v -> showVoiceSettings()); sleepButton.setOnClickListener(v -> showSleepDialog());
         sleepRewindButton.setOnClickListener(v -> { if (reader != null) reader.rewindCompletedSleepTimer(); }); sleepRewindButton.setVisibility(View.INVISIBLE);
-        progressRow.addView(bookProgress, new LinearLayout.LayoutParams(0, dp(52), 4));
-        FrameLayout rewindColumn = new FrameLayout(this); rewindColumn.addView(sleepRewindButton, new FrameLayout.LayoutParams(dp(56), dp(56), Gravity.CENTER)); progressRow.addView(rewindColumn, new LinearLayout.LayoutParams(0, dp(58), 1)); playerPanel.addView(progressRow, new LinearLayout.LayoutParams(-1, dp(58)));
+        playerPanel.addView(bookProgress, new LinearLayout.LayoutParams(-1, dp(52)));
         attachSeekButton(previous, -1);
         play.setOnClickListener(v -> { if (reader == null) return; cancelAutomaticResume(true); if (reader.isPlaying()) reader.pause(); else reader.play(); });
         attachSeekButton(next, 1);
         addPlayerButton(playerButtons, voiceButton); addPlayerButton(playerButtons, previous); addPlayerButton(playerButtons, play); addPlayerButton(playerButtons, next); addPlayerButton(playerButtons, sleepButton);
         playerPanel.addView(playerButtons, new LinearLayout.LayoutParams(-1, dp(64)));
-        LinearLayout.LayoutParams panelParams = new LinearLayout.LayoutParams(-1, dp(160)); panelParams.setMargins(0, dp(8), 0, dp(16)); root.addView(playerPanel, panelParams); setContentView(root); updateControls(); if (reader != null) showCurrent(reader.getCurrent(), reader.getCount()); root.requestApplyInsets(); focusHeading(appHeading);
+        playerPanel.addView(sleepRewindButton, new LinearLayout.LayoutParams(-1, dp(58)));
+        LinearLayout.LayoutParams panelParams = new LinearLayout.LayoutParams(-1, dp(200)); panelParams.setMargins(0, dp(4), 0, dp(4)); root.addView(playerPanel, panelParams); setContentView(root); updateControls(); if (reader != null) showCurrent(reader.getCurrent(), reader.getCount()); root.requestApplyInsets(); focusHeading(appHeading);
     }
     private TextView label(String value, int sp, boolean bold) { TextView v = new TextView(this); v.setText(value); v.setTextSize(uiSize(sp)); v.setTextColor(appColor(R.color.text_primary)); if (bold) v.setTypeface(v.getTypeface(), android.graphics.Typeface.BOLD); return v; }
     private Button button(String value) { Button b = new Button(this); b.setText(value); b.setTextSize(uiSize(17)); b.setAllCaps(false); return b; }
@@ -175,7 +176,7 @@ public class MainActivity extends Activity implements ReaderService.Listener {
     private Button compactButton(String value) { Button b = button(value); b.setMinWidth(0); b.setMinimumWidth(0); b.setPadding(dp(12), 0, dp(12), 0); return b; }
     private int dp(int value) { return (int)(value * getResources().getDisplayMetrics().density + .5f); }
     private float uiSize(float base) { return base * getSettings().getInt("interface_scale", 100) / 100f; }
-    private int appColor(int resource) { String theme = getSettings().getString("theme", "system"); if ("dark".equals(theme)) { if (resource == R.color.text_secondary) return Color.rgb(208,208,208); if (resource == R.color.highlight) return Color.rgb(36,74,102); return resource == R.color.text_primary || resource == R.color.accent ? Color.WHITE : Color.BLACK; } if ("light".equals(theme)) { if (resource == R.color.text_secondary) return Color.rgb(51,51,51); if (resource == R.color.highlight) return Color.rgb(185,215,245); return resource == R.color.text_primary || resource == R.color.accent ? Color.BLACK : Color.WHITE; } return getColor(resource); }
+    private int appColor(int resource) { String theme = getSettings().getString("theme", "system"); if ("dark".equals(theme)) { if (resource == R.color.text_secondary) return Color.rgb(208,208,208); if (resource == R.color.highlight) return Color.rgb(0,82,128); return resource == R.color.text_primary || resource == R.color.accent ? Color.WHITE : Color.BLACK; } if ("light".equals(theme)) { if (resource == R.color.text_secondary) return Color.rgb(51,51,51); if (resource == R.color.highlight) return Color.rgb(125,183,232); return resource == R.color.text_primary || resource == R.color.accent ? Color.BLACK : Color.WHITE; } return getColor(resource); }
     private android.content.SharedPreferences getSettings() { return getSharedPreferences("reader_settings", MODE_PRIVATE); }
 
     private void chooseFile() {
@@ -229,7 +230,7 @@ public class MainActivity extends Activity implements ReaderService.Listener {
     }
     private String withoutTxtExtension(String value) { return value != null && value.toLowerCase(Locale.ROOT).endsWith(".txt") ? value.substring(0, value.length() - 4) : value; }
 
-    @Override public void onPlaybackState(int index, int count, boolean playing) { runOnUiThread(() -> { if (playing && (pausedAutomaticallyOutsideReader || automaticResumePending)) cancelAutomaticResume(true); showCurrent(index, count); play.setImageResource(playing ? R.drawable.ic_pause : R.drawable.ic_play); play.setContentDescription(getString(playing ? R.string.pause_sentence : R.string.play_sentence)); if (reader != null && reader.isSleepRewindAvailable()) { int minutes = reader.getCompletedSleepMinutes(); sleepRewindButton.setVisibility(View.VISIBLE); sleepRewindButton.setContentDescription(getResources().getQuantityString(R.plurals.rewind_sleep_minutes, minutes, minutes)); } else sleepRewindButton.setVisibility(View.INVISIBLE); updateControls(); }); }
+    @Override public void onPlaybackState(int index, int count, boolean playing) { runOnUiThread(() -> { if (playing && (pausedAutomaticallyOutsideReader || automaticResumePending)) cancelAutomaticResume(true); showCurrent(index, count); play.setImageResource(playing ? R.drawable.ic_pause : R.drawable.ic_play); play.setContentDescription(getString(playing ? R.string.pause_sentence : R.string.play_sentence)); if (reader != null && reader.isSleepRewindAvailable()) { int minutes = reader.getCompletedSleepMinutes(); sleepRewindButton.setText(getResources().getQuantityString(R.plurals.rewind_sleep_minutes, minutes, minutes)); sleepRewindButton.setVisibility(View.VISIBLE); } else { sleepRewindButton.setText(""); sleepRewindButton.setVisibility(View.INVISIBLE); } updateControls(); }); }
     @Override public void onPlaybackError(String message) { runOnUiThread(() -> toast(message)); }
     private void showCurrent(int index, int count) {
         if (reader == null || reader.getText().isEmpty()) return;

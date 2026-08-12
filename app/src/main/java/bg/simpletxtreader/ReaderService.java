@@ -116,6 +116,7 @@ public class ReaderService extends Service implements TextToSpeech.OnInitListene
     public int getCount() { return sentences.size(); }
     public boolean isPlaying() { return playing; }
     public boolean isReady() { return ready; }
+    public MediaController getMediaController() { return mediaSession == null ? null : mediaSession.getController(); }
     public boolean isSleepRewindAvailable() { return sleepRewindAvailable; }
     public int getCompletedSleepMinutes() { return completedSleepMinutes; }
     public synchronized List<EngineOption> getEngineOptions() { return new ArrayList<>(allEngines); }
@@ -139,7 +140,7 @@ public class ReaderService extends Service implements TextToSpeech.OnInitListene
     }
     public void clearDocument() {
         pause(); uri = ""; title = ""; text = ""; current = 0; sentences.clear();
-        notifyState(); updateMediaSession(); stopForeground(true);
+        notifyState(); stopForeground(true);
     }
     public void play() {
         if (sleepRewindAvailable) { clearSleepRewindState(); notifyState(); }
@@ -147,13 +148,13 @@ public class ReaderService extends Service implements TextToSpeech.OnInitListene
         if (sentences.isEmpty()) return;
         if (captureSleepStartOnPlay) { sleepStartSentence = current; captureSleepStartOnPlay = false; }
         applySettings(); transientRetries = 0; playing = true;
-        if (!requestAudioFocus()) { playing = false; notifyState(); updateMediaSession(); updateNotification(); return; }
+        if (!requestAudioFocus()) { playing = false; notifyState(); updateNotification(); return; }
         startSilentPlayback(); promoteMediaSession(); updateMediaSession(); startService(new Intent(this, ReaderService.class)); startForeground(NOTIFICATION_ID, notification());
         speakCurrent();
     }
     public void pause() {
         pendingPlay = false; playing = false; activeUtterance = ""; utteranceSerial++; handler.removeCallbacksAndMessages(null); if (tts != null) tts.stop(); stopSilentPlayback();
-        restoreVolumeAfterFade(); abandonAudioFocus(); savePosition(); if (!sentences.isEmpty()) updateNotification(); notifyState(); updateMediaSession();
+        restoreVolumeAfterFade(); abandonAudioFocus(); savePosition(); if (!sentences.isEmpty()) updateNotification(); notifyState();
     }
     public void move(int delta) {
         boolean resume = playing; playing = false; activeUtterance = ""; utteranceSerial++; handler.removeCallbacksAndMessages(null); if (tts != null) tts.stop();
@@ -198,7 +199,7 @@ public class ReaderService extends Service implements TextToSpeech.OnInitListene
         Bundle parameters = new Bundle(); parameters.putFloat(TextToSpeech.Engine.KEY_PARAM_VOLUME, getSharedPreferences("reader_settings", MODE_PRIVATE).getInt("volume_percent", 50) / 100f);
         int result = tts.speak(text.substring(range.start, range.end).trim(), TextToSpeech.QUEUE_FLUSH, parameters, utterance);
         if (result == TextToSpeech.ERROR) { pause(); error(getString(R.string.tts_error)); }
-        notifyState(); updateMediaSession(); updateNotification();
+        notifyState(); updateNotification();
     }
     private void finishCurrentSentence(String utterance) {
         if (!playing || !utterance.equals(activeUtterance)) return;
