@@ -26,6 +26,9 @@
     <string name="sentence_pause">Пауза между изреченията</string>
     <string name="fast_seek_interval">Интервал за бързо превъртане</string>
     <string name="milliseconds_value">%1$d милисекунди</string>
+    <string name="milliseconds_short_value">%1$d ms</string>
+    <string name="percentage_value">%1$d%%</string>
+    <string name="minutes_short_value">%1$d мин</string>
     <string name="document_font_size">Размер на текста във файла</string>
     <string name="interface_font_size">Размер на текста в интерфейса</string>
     <string name="language">Език</string>

@@ -26,6 +26,9 @@
     <string name="sentence_pause">Pause between sentences</string>
     <string name="fast_seek_interval">Fast seek interval</string>
     <string name="milliseconds_value">%1$d milliseconds</string>
+    <string name="milliseconds_short_value">%1$d ms</string>
+    <string name="percentage_value">%1$d%%</string>
+    <string name="minutes_short_value">%1$d min</string>
     <string name="document_font_size">Document text size</string>
     <string name="interface_font_size">Interface text size</string>
     <string name="language">Language</string>
