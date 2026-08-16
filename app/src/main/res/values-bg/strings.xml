@@ -12,6 +12,9 @@
     <string name="sentence_number">Номер на изречение</string>
     <string name="invalid_sentence">Въведете номер от 1 до %1$d.</string>
     <string name="no_text">Няма текст за четене</string>
+    <string name="end_of_text">Край на текста.</string>
+    <string name="no_more_text">Няма повече текст.</string>
+    <string name="text_cues">Звук в началото и края на текста</string>
     <string name="previous">Предишно</string>
     <string name="next">Следващо</string>
     <string name="previous_sentence">Предишно изречение</string>
@@ -43,6 +46,10 @@
     <string name="voice_settings">Настройки на гласа</string>
     <string name="speech_engine">Синтезатор на реч</string>
     <string name="voice">Глас</string>
+    <string name="numbered_voice">Глас %1$d</string>
+    <string name="preview_voice">Проба на гласа</string>
+    <string name="stop_preview">Спри пробата</string>
+    <string name="voice_preview_sample">Така звучи избраният глас.</string>
     <string name="percentage_spoken">%1$d процента</string>
     <string name="book_progress">Напредък във файла</string>
     <string name="pause_for_settings">Спирай възпроизвеждането извън четеца</string>
@@ -61,7 +68,7 @@
     <string name="delete">Изтриване</string>
     <string name="remove_book">Премахни %1$s от последните файлове</string>
     <string name="no_recent">Няма последно отваряни файлове</string>
-    <string name="file_too_large">Файлът е твърде голям (максимум 15 MB).</string>
+    <string name="file_too_large">Файлът е твърде голям (максимум 5 MB).</string>
     <string name="file_empty">Файлът е празен.</string>
     <string name="file_unavailable">Файлът не е достъпен.</string>
     <string name="open_failed">Файлът не може да бъде отворен.</string>

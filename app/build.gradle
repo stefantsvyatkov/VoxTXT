@@ -20,15 +20,15 @@ if (releaseRequested && signingPropertiesFile == null) {
 def decodeSigningSecret = { String encoded -> new String(Base64.decoder.decode(encoded), 'UTF-8') }
 
 android {
-    namespace 'bg.simpletxtreader'
+    namespace 'bg.stefantsvyatkov.voxtxt'
     compileSdk { version = release(37) }
 
     defaultConfig {
         applicationId 'bg.stefantsvyatkov.voxtxt'
         minSdk 26
         targetSdk { version = release(37) }
-        versionCode 2
-        versionName '1.0-beta2'
+        versionCode 3
+        versionName '1.0-beta3'
     }
 
     signingConfigs {
@@ -50,6 +50,15 @@ android {
         }
     }
 
+    // Google Play splits an App Bundle by language and installs only the device's own. The in-app Language
+    // setting changes the locale at runtime, so a user on an English phone choosing Български would get
+    // English strings back. Keeping every language in the base module is what makes that setting work.
+    bundle {
+        language {
+            enableSplit = false
+        }
+    }
+
     compileOptions {
         sourceCompatibility JavaVersion.VERSION_17
         targetCompatibility JavaVersion.VERSION_17
@@ -58,9 +67,12 @@ android {
 
 androidComponents {
     onVariants(selector().withBuildType('release')) { variant ->
-        // Follows versionName, so a new release no longer ships under the previous release's file name.
+        // Named after the release label in versionName ('1.0-beta3' -> VoxTXT-beta3.apk), so a new release
+        // never ships under the previous release's file name.
+        def version = android.defaultConfig.versionName
+        def label = version.contains('-') ? version.substring(version.indexOf('-') + 1) : version
         variant.outputs.each { output ->
-            output.outputFileName.set("VoxTXT-${android.defaultConfig.versionName}.apk")
+            output.outputFileName.set("VoxTXT-${label}.apk")
         }
     }
 }

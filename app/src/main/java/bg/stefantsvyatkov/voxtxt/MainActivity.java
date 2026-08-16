@@ -1,4 +1,4 @@
-package bg.simpletxtreader;
+package bg.stefantsvyatkov.voxtxt;
 
 import android.Manifest;
 import android.app.*;
@@ -21,9 +21,13 @@ import java.util.*;
 import java.util.concurrent.*;
 
 public class MainActivity extends Activity implements ReaderService.Listener {
-    private static final int OPEN_TEXT = 10, MAX_BYTES = 15 * 1024 * 1024;
-    private static final long AUTOMATIC_RESUME_DELAY_MS = 1500L;
+    private static final int OPEN_TEXT = 10, MAX_BYTES = 5 * 1024 * 1024;
+    private static final long AUTOMATIC_RESUME_DELAY_MS = 1500L, PREVIEW_DELAY_MS = 800L;
     private static final String STATE_RESUME_AFTER_RECREATE = "resume_after_recreate";
+    private static final String DOCUMENT_PREFS = "reader_documents";
+    private static final String[] CYRILLIC_LANGUAGES = {"bg", "ru", "uk", "sr", "mk", "be"};
+    private static final String[] CENTRAL_EUROPEAN_LANGUAGES = {"cs", "sk", "pl", "hu", "sl", "hr", "ro", "sq"};
+    private static final String READABLE_PUNCTUATION = "!?;:'\"()[]{}<>«»„“”‘’–—-…*/\\%&@#№+=|~^$€£°§";
     private final ExecutorService io = Executors.newSingleThreadExecutor();
     private TextView appHeading, title, status, body;
     private ImageButton voiceButton, previous, play, next, sleepButton;
@@ -37,12 +41,15 @@ public class MainActivity extends Activity implements ReaderService.Listener {
     private String pendingText;
     private final Handler seekHandler = new Handler(Looper.getMainLooper());
     private final Handler automaticResumeHandler = new Handler(Looper.getMainLooper());
+    private final Handler previewHandler = new Handler(Looper.getMainLooper());
     private boolean fastSeeking, resumeAfterFastSeek;
     private boolean pausedAutomaticallyOutsideReader, automaticResumePending, resumeAfterRecreate, resumeAfterFilePickerLoad;
     private boolean showingRecent;
     private String renderedText;
     private BackgroundColorSpan highlightSpan;
-    private Runnable subpageCloseAction;
+    private Runnable subpageCloseAction, previewAction;
+    private Button previewButton;
+    private boolean previewSpeaking;
     private boolean updatingBookProgress, resumeAfterProgressSeek, draggingBookProgress;
     private final IdentityHashMap<SeekBar, TextView> sliderValues = new IdentityHashMap<>();
     private interface SpinnerSelectionObserver { void onSelected(int position); }
@@ -119,14 +126,14 @@ public class MainActivity extends Activity implements ReaderService.Listener {
         Uri incoming = Intent.ACTION_VIEW.equals(getIntent().getAction()) ? getIntent().getData() : null;
         if (incoming != null) loadUri(incoming, true);
         else {
-            String last = getPreferences(MODE_PRIVATE).getString("last_uri", "");
+            String last = documents().getString("last_uri", "");
             if (!last.isEmpty()) loadUri(Uri.parse(last), false);
         }
     }
 
     private void buildUi() {
         showingRecent = false;
-        renderedText = null; sliderValues.clear();
+        renderedText = null; sliderValues.clear(); previewButton = null; previewAction = null; previewSpeaking = false;
         int pad = dp(16);
         LinearLayout root = new LinearLayout(this); root.setOrientation(LinearLayout.VERTICAL); root.setPadding(pad, dp(10), pad, dp(12));
         root.setOnApplyWindowInsetsListener((v, insets) -> { v.setPadding(pad, insets.getSystemWindowInsetTop() + dp(10), pad, insets.getSystemWindowInsetBottom() + dp(12)); return insets; });
@@ -184,6 +191,8 @@ public class MainActivity extends Activity implements ReaderService.Listener {
     private float uiSize(float base) { return base * getSettings().getInt("interface_scale", 100) / 100f; }
     private int appColor(int resource) { String theme = getSettings().getString("theme", "system"); if ("dark".equals(theme)) { if (resource == R.color.text_secondary) return Color.rgb(208,208,208); if (resource == R.color.highlight) return Color.rgb(0,82,128); return resource == R.color.text_primary || resource == R.color.accent ? Color.WHITE : Color.BLACK; } if ("light".equals(theme)) { if (resource == R.color.text_secondary) return Color.rgb(51,51,51); if (resource == R.color.highlight) return Color.rgb(125,183,232); return resource == R.color.text_primary || resource == R.color.accent ? Color.BLACK : Color.WHITE; } return getColor(resource); }
     private android.content.SharedPreferences getSettings() { return getSharedPreferences("reader_settings", MODE_PRIVATE); }
+    // Explicitly named so it no longer depends on the class package the way Activity.getPreferences() does.
+    private android.content.SharedPreferences documents() { return getSharedPreferences(DOCUMENT_PREFS, MODE_PRIVATE); }
 
     private void chooseFile() {
         pausePlaybackOutsideReader();
@@ -209,7 +218,7 @@ public class MainActivity extends Activity implements ReaderService.Listener {
                 if (loaded.trim().isEmpty()) throw new IOException(getString(R.string.file_empty));
                 String name = withoutTxtExtension(fileName); runOnUiThread(() -> {
                     if (destroyed) return; currentUri = uri.toString(); currentName = name; title.setText(name); title.setVisibility(View.VISIBLE); title.setPadding(0, 0, 0, dp(8)); loading = false;
-                    if (remember) getPreferences(MODE_PRIVATE).edit().putString("last_uri", currentUri).apply();
+                    if (remember) documents().edit().putString("last_uri", currentUri).apply();
                     addRecent(currentUri, currentName); if (reader == null) pendingText = loaded; else finishLoad(loaded);
                 });
             } catch (Exception e) { runOnUiThread(() -> { loading = false; status.setText(R.string.open_failed); toast(e.getMessage()); updateControls(); if (resumeAfterFilePickerLoad) { resumeAfterFilePickerLoad = false; scheduleAutomaticPlayback(); } }); }
@@ -222,13 +231,80 @@ public class MainActivity extends Activity implements ReaderService.Listener {
             while ((n = in.read(buf)) != -1) { total += n; if (total > MAX_BYTES) throw new IOException(getString(R.string.file_too_large)); out.write(buf, 0, n); } return out.toByteArray();
         }
     }
-    private String decode(byte[] b) throws CharacterCodingException {
+    private String decode(byte[] b) {
         if (b.length >= 3 && b[0] == (byte)0xEF && b[1] == (byte)0xBB && b[2] == (byte)0xBF) return new String(b, 3, b.length - 3, StandardCharsets.UTF_8);
         if (b.length >= 2 && b[0] == (byte)0xFF && b[1] == (byte)0xFE) return new String(b, 2, b.length - 2, StandardCharsets.UTF_16LE);
         if (b.length >= 2 && b[0] == (byte)0xFE && b[1] == (byte)0xFF) return new String(b, 2, b.length - 2, StandardCharsets.UTF_16BE);
-        try { return StandardCharsets.UTF_8.newDecoder().onMalformedInput(CodingErrorAction.REPORT).decode(ByteBuffer.wrap(b)).toString(); }
-        catch (CharacterCodingException e) { return new String(b, Charset.forName("windows-1252")); }
+        try { return StandardCharsets.UTF_8.newDecoder().onMalformedInput(CodingErrorAction.REPORT).onUnmappableCharacter(CodingErrorAction.REPORT).decode(ByteBuffer.wrap(b)).toString(); }
+        catch (CharacterCodingException notUtf8) { /* an older single or double byte encoding */ }
+        String utf16 = decodeUnmarkedUtf16(b);
+        return utf16 != null ? utf16 : decodeLegacy(b);
     }
+    // UTF-16 without a byte order mark shows up as one zero byte in every pair.
+    private String decodeUnmarkedUtf16(byte[] b) {
+        if (b.length < 16 || b.length % 2 != 0) return null;
+        int limit = Math.min(b.length, 8192), pairs = limit / 2, even = 0, odd = 0;
+        for (int i = 0; i + 1 < limit; i += 2) { if (b[i] == 0) even++; if (b[i + 1] == 0) odd++; }
+        if (odd > pairs * 0.3f && even < pairs * 0.05f) return new String(b, StandardCharsets.UTF_16LE);
+        if (even > pairs * 0.3f && odd < pairs * 0.05f) return new String(b, StandardCharsets.UTF_16BE);
+        return null;
+    }
+    // Old TXT books carry no marker of their encoding, so every candidate is decoded and the most
+    // text-like result wins. Cyrillic books read as Western European are the case that matters most here.
+    private String decodeLegacy(byte[] b) {
+        String best = null; long bestScore = Long.MIN_VALUE;
+        for (String name : legacyCharsets()) {
+            Charset charset;
+            try { charset = Charset.forName(name); } catch (Exception unsupported) { continue; }
+            String candidate = new String(b, charset);
+            long score = plausibility(candidate);
+            if (score > bestScore) { bestScore = score; best = candidate; }
+        }
+        return best != null ? best : new String(b, StandardCharsets.ISO_8859_1);
+    }
+    private long plausibility(String text) {
+        long score = 0; int limit = Math.min(text.length(), 128 * 1024);
+        int ascii = 0, accented = 0, cyrillic = 0, greek = 0, word = 0, preferred = 0;
+        char script = preferredScript();
+        for (int i = 0; i <= limit; i++) {
+            char c = i < limit ? text.charAt(i) : ' ';
+            if (Character.isLetter(c)) {
+                word++;
+                if (c < 128) ascii++;
+                else if (c < 0x0250) accented++;
+                else if (c >= 0x0400 && c <= 0x04FF) { cyrillic++; if (script == 'c') preferred++; }
+                else if (c >= 0x0370 && c <= 0x03FF) { greek++; if (script == 'g') preferred++; }
+                continue;
+            }
+            if (word > 0) { score += scoreWord(word, ascii, accented, cyrillic, greek); ascii = accented = cyrillic = greek = word = 0; }
+            if (c == ' ' || c == '\n' || c == '\r' || c == '\t' || c == '.' || c == ',') score += 2;
+            else if (c < 0x20 || (c >= 0x7F && c <= 0x9F)) score -= 60;
+            else if (Character.isDigit(c) || READABLE_PUNCTUATION.indexOf(c) >= 0) score += 1;
+            else score -= 8;
+        }
+        return score + preferred;
+    }
+    private long scoreWord(int length, int ascii, int accented, int cyrillic, int greek) {
+        int scripts = (ascii + accented > 0 ? 1 : 0) + (cyrillic > 0 ? 1 : 0) + (greek > 0 ? 1 : 0);
+        if (scripts > 1) return -10L * length;                                 // no real word mixes alphabets
+        if (accented > 0 && ascii == 0 && length > 1) return -6L * length;     // Latin words are not all accents
+        return 3L * length;
+    }
+    // Several encodings can produce equally plausible text from the same bytes - Czech in windows-1250 and
+    // in windows-1252 differ only in which accents appear - so the reader's own language breaks the tie.
+    private String[] legacyCharsets() {
+        String language = Locale.getDefault().getLanguage();
+        if (matches(CYRILLIC_LANGUAGES, language)) return new String[]{"windows-1251", "windows-1252", "windows-1250", "ISO-8859-7"};
+        if ("el".equals(language)) return new String[]{"ISO-8859-7", "windows-1252", "windows-1250", "windows-1251"};
+        if (matches(CENTRAL_EUROPEAN_LANGUAGES, language)) return new String[]{"windows-1250", "windows-1252", "windows-1251", "ISO-8859-7"};
+        return new String[]{"windows-1252", "windows-1250", "windows-1251", "ISO-8859-7"};
+    }
+    private char preferredScript() {
+        String language = Locale.getDefault().getLanguage();
+        if (matches(CYRILLIC_LANGUAGES, language)) return 'c';
+        return "el".equals(language) ? 'g' : 'l';
+    }
+    private boolean matches(String[] languages, String value) { for (String language : languages) if (language.equals(value)) return true; return false; }
     private String displayFileName(Uri uri) {
         try (android.database.Cursor c = getContentResolver().query(uri, new String[]{OpenableColumns.DISPLAY_NAME}, null, null, null)) { if (c != null && c.moveToFirst()) return c.getString(0); }
         catch (Exception ignored) {}
@@ -335,6 +411,7 @@ public class MainActivity extends Activity implements ReaderService.Listener {
         CheckBox pauseForSettings = new CheckBox(this); pauseForSettings.setText(R.string.pause_for_settings); pauseForSettings.setTextSize(uiSize(18)); pauseForSettings.setChecked(p.getBoolean("pause_for_settings", true)); pauseForSettings.setPadding(0, dp(10), 0, dp(6)); box.addView(pauseForSettings, new LinearLayout.LayoutParams(-1, -2));
         CheckBox seekVibration = new CheckBox(this); seekVibration.setText(R.string.seek_vibration); seekVibration.setTextSize(uiSize(18)); seekVibration.setChecked(p.getBoolean("seek_vibration", true)); seekVibration.setPadding(0, dp(6), 0, dp(10)); box.addView(seekVibration, new LinearLayout.LayoutParams(-1, -2));
         CheckBox preventDeviceAutoplay = new CheckBox(this); preventDeviceAutoplay.setText(R.string.prevent_device_autoplay); preventDeviceAutoplay.setTextSize(uiSize(18)); preventDeviceAutoplay.setChecked(p.getBoolean("prevent_device_autoplay", true)); preventDeviceAutoplay.setPadding(0, dp(6), 0, dp(10)); box.addView(preventDeviceAutoplay, new LinearLayout.LayoutParams(-1, -2));
+        CheckBox textCues = new CheckBox(this); textCues.setText(R.string.text_cues); textCues.setTextSize(uiSize(18)); textCues.setChecked(p.getBoolean("text_cues", true)); textCues.setPadding(0, dp(6), 0, dp(10)); box.addView(textCues, new LinearLayout.LayoutParams(-1, -2));
         final int[] previewScale = {originalInterfaceScale}; final boolean[] keepPreview = {false};
         interfaceFont.setOnSeekBarChangeListener(new SeekBar.OnSeekBarChangeListener() {
             public void onStartTrackingTouch(SeekBar seekBar) {} public void onStopTrackingTouch(SeekBar seekBar) {}
@@ -342,7 +419,7 @@ public class MainActivity extends Activity implements ReaderService.Listener {
         });
         Runnable applyOptions = () -> {
             int fontValue = seekValue(font), interfaceValue = 50 + interfaceFont.getProgress() * 5; String selectedTheme = themeValues[themeSpinner.getSelectedItemPosition()], selectedLanguage = languageValues[languageSpinner.getSelectedItemPosition()]; boolean themeChanged = !selectedTheme.equals(p.getString("theme", "system")), languageChanged = !selectedLanguage.equals(p.getString("language", "system"));
-            p.edit().putInt("font_size", fontValue).putInt("interface_scale", interfaceValue).putInt("fast_seek_interval", seekValue(fastSeekInterval)).putString("theme", selectedTheme).putString("language", selectedLanguage).putBoolean("pause_for_settings", pauseForSettings.isChecked()).putBoolean("seek_vibration", seekVibration.isChecked()).putBoolean("prevent_device_autoplay", preventDeviceAutoplay.isChecked()).apply(); keepPreview[0] = true; body.setTextSize(fontValue); if (languageChanged) applyLanguage(selectedLanguage); if (themeChanged || languageChanged) { resumeAfterRecreate = pausedAutomaticallyOutsideReader; pausedAutomaticallyOutsideReader = false; subpageCloseAction = null; getWindow().getDecorView().post(this::recreate); } else closeRecent();
+            p.edit().putInt("font_size", fontValue).putInt("interface_scale", interfaceValue).putInt("fast_seek_interval", seekValue(fastSeekInterval)).putString("theme", selectedTheme).putString("language", selectedLanguage).putBoolean("pause_for_settings", pauseForSettings.isChecked()).putBoolean("seek_vibration", seekVibration.isChecked()).putBoolean("prevent_device_autoplay", preventDeviceAutoplay.isChecked()).putBoolean("text_cues", textCues.isChecked()).apply(); keepPreview[0] = true; body.setTextSize(fontValue); if (languageChanged) applyLanguage(selectedLanguage); if (themeChanged || languageChanged) { resumeAfterRecreate = pausedAutomaticallyOutsideReader; pausedAutomaticallyOutsideReader = false; subpageCloseAction = null; getWindow().getDecorView().post(this::recreate); } else closeRecent();
         };
         Runnable closeOptions = () -> { if (!keepPreview[0]) previewInterfaceScale(previewScale[0], originalInterfaceScale); };
         showSettingsPage(R.string.settings, box, applyOptions, closeOptions);
@@ -351,16 +428,17 @@ public class MainActivity extends Activity implements ReaderService.Listener {
     private void showVoiceSettings() {
         if (reader == null) return; android.content.SharedPreferences p = getSettings(); pausePlaybackOutsideReader(); sliderValues.clear();
         ArrayList<ReaderService.EngineOption> engines = new ArrayList<>(); engines.add(new ReaderService.EngineOption("", getString(R.string.default_voice))); engines.addAll(reader.getEngineOptions());
-        LinearLayout box = new LinearLayout(this); box.setOrientation(LinearLayout.VERTICAL); box.setPadding(dp(20), 0, dp(20), dp(8));
+        LinearLayout box = new LinearLayout(this); box.setOrientation(LinearLayout.VERTICAL); box.setPadding(dp(20), 0, dp(20), 0);
         TextView engineLabel = label(getString(R.string.speech_engine), 18, true); engineLabel.setPadding(0, dp(12), 0, 0); box.addView(engineLabel);
         String[] engineLabels = new String[engines.size()]; for (int i = 0; i < engines.size(); i++) engineLabels[i] = engines.get(i).label; AccessibleSpinner engineSpinner = new AccessibleSpinner(this); engineSpinner.setAdapter(themedSpinnerAdapter(engineLabels)); String savedEngine = p.getString("engine", ""); int selectedEngine = 0; for (int i = 1; i < engines.size(); i++) if (engines.get(i).name.equals(savedEngine)) { selectedEngine = i; break; } engineSpinner.setSelection(selectedEngine, false); box.addView(engineSpinner);
         TextView languageLabel = label(getString(R.string.language), 18, true); languageLabel.setPadding(0, dp(12), 0, 0); languageLabel.setVisibility(View.GONE); box.addView(languageLabel);
         AccessibleSpinner languageSpinner = new AccessibleSpinner(this); languageSpinner.setVisibility(View.GONE); box.addView(languageSpinner); ArrayList<LanguageOption> voiceLanguages = new ArrayList<>();
         TextView voiceLabel = label(getString(R.string.voice), 18, true); voiceLabel.setPadding(0, dp(12), 0, 0); voiceLabel.setVisibility(View.GONE); box.addView(voiceLabel);
         AccessibleSpinner voiceSpinner = new AccessibleSpinner(this); voiceSpinner.setVisibility(View.GONE); box.addView(voiceSpinner);
+        previewButton = button(getString(R.string.preview_voice)); previewButton.setVisibility(View.INVISIBLE); previewSpeaking = false;
         VoiceSelection voiceSelection = new VoiceSelection();
         configureSpinnerAccessibility(engineSpinner, engineLabels, position -> {
-            String requestedEngine = engines.get(position).name; languageLabel.setVisibility(View.GONE); languageSpinner.setVisibility(View.GONE); voiceLabel.setVisibility(View.GONE); voiceSpinner.setVisibility(View.GONE);
+            String requestedEngine = engines.get(position).name; languageLabel.setVisibility(View.GONE); languageSpinner.setVisibility(View.GONE); voiceLabel.setVisibility(View.GONE); voiceSpinner.setVisibility(View.GONE); previewButton.setVisibility(View.INVISIBLE);
             reader.loadVoiceOptions(requestedEngine, available -> runOnUiThread(() -> {
                 if (destroyed || engineSpinner.getSelectedItemPosition() < 0 || !requestedEngine.equals(engines.get(engineSpinner.getSelectedItemPosition()).name)) return;
                 voiceSelection.all = new ArrayList<>(available); voiceLanguages.clear(); voiceLanguages.addAll(buildVoiceLanguages(available));
@@ -368,16 +446,43 @@ public class MainActivity extends Activity implements ReaderService.Listener {
                 languageSpinner.setAdapter(themedSpinnerAdapter(languageNames)); String savedVoice = p.getString(ReaderService.voicePreferenceKey(requestedEngine), ""), wantedTag = localeForVoice(available, savedVoice); int selectedLanguage = bestLanguagePosition(voiceLanguages, wantedTag); languageSpinner.setSelection(selectedLanguage, false);
                 configureSpinnerAccessibility(languageSpinner, languageNames, selected -> populateVoiceChoices(voiceSpinner, voiceSelection, voiceLanguages.get(selected).tag, requestedEngine, p));
                 populateVoiceChoices(voiceSpinner, voiceSelection, voiceLanguages.get(selectedLanguage).tag, requestedEngine, p);
-                languageLabel.setVisibility(View.VISIBLE); languageSpinner.setVisibility(View.VISIBLE); voiceLabel.setVisibility(View.VISIBLE); voiceSpinner.setVisibility(View.VISIBLE);
+                languageLabel.setVisibility(View.VISIBLE); languageSpinner.setVisibility(View.VISIBLE); voiceLabel.setVisibility(View.VISIBLE); voiceSpinner.setVisibility(View.VISIBLE); if (previewButton != null) previewButton.setVisibility(View.VISIBLE);
             }));
         });
         PercentSeekBar rate = percentSeek(box, R.string.speech_rate, p.getInt("rate_percent", 20));
         PercentSeekBar pitch = percentSeek(box, R.string.pitch, p.getInt("pitch_percent", 20));
         PercentSeekBar volume = percentSeek(box, R.string.volume, p.getInt("volume_percent", 50));
         SeekBar gap = millisecondSeek(box, p.getInt("sentence_pause", 0));
-        Runnable applyVoice = () -> { ReaderService.EngineOption engine = engines.get(engineSpinner.getSelectedItemPosition()); String voiceName = voiceSelection.visible.isEmpty() || voiceSpinner.getSelectedItemPosition() < 0 ? "" : voiceSelection.visible.get(Math.min(voiceSpinner.getSelectedItemPosition(), voiceSelection.visible.size() - 1)).name; p.edit().putString("engine", engine.name).putString(ReaderService.voicePreferenceKey(engine.name), voiceName).remove("voice").remove("rate").remove("pitch").putInt("rate_percent", rate.percent()).putInt("pitch_percent", pitch.percent()).putInt("volume_percent", volume.percent()).putInt("sentence_pause", seekValue(gap)).apply(); boolean restartAfterApply = reader.isPlaying(); reader.updateSettings(false); closeRecent(); if (restartAfterApply) scheduleAutomaticPlayback(); };
-        Runnable closeVoice = () -> {};
-        showSettingsPage(R.string.voice_settings, box, applyVoice, closeVoice);
+        previewAction = () -> {
+            if (reader == null || destroyed) return;
+            reader.previewVoice(engines.get(Math.max(0, engineSpinner.getSelectedItemPosition())).name, selectedVoiceName(voiceSelection, voiceSpinner),
+                rate.percent(), pitch.percent(), volume.percent(), getString(R.string.voice_preview_sample));
+        };
+        previewButton.setOnClickListener(v -> {
+            if (reader == null) return;
+            previewHandler.removeCallbacksAndMessages(null);
+            if (previewSpeaking) { reader.stopPreview(); return; }
+            // The screen reader speaks the button first, and most engines can only say one thing at a time,
+            // so the sample waits for that announcement instead of being cut off by it.
+            startPreview(PREVIEW_DELAY_MS);
+        });
+        Runnable applyVoice = () -> { previewHandler.removeCallbacksAndMessages(null); reader.stopPreview(); ReaderService.EngineOption engine = engines.get(engineSpinner.getSelectedItemPosition()); String voiceName = selectedVoiceName(voiceSelection, voiceSpinner); p.edit().putString("engine", engine.name).putString(ReaderService.voicePreferenceKey(engine.name), voiceName).remove("voice").remove("rate").remove("pitch").putInt("rate_percent", rate.percent()).putInt("pitch_percent", pitch.percent()).putInt("volume_percent", volume.percent()).putInt("sentence_pause", seekValue(gap)).apply(); boolean restartAfterApply = reader.isPlaying(); reader.updateSettings(false); closeRecent(); if (restartAfterApply) scheduleAutomaticPlayback(); };
+        Runnable closeVoice = () -> { previewHandler.removeCallbacksAndMessages(null); previewAction = null; if (reader != null) reader.stopPreview(); };
+        showSettingsPage(R.string.voice_settings, box, previewButton, applyVoice, closeVoice);
+    }
+    private void startPreview(long delay) {
+        previewHandler.removeCallbacksAndMessages(null);
+        previewHandler.postDelayed(() -> { if (previewAction != null) previewAction.run(); }, delay);
+    }
+    @Override public void onPreviewState(boolean speaking) {
+        runOnUiThread(() -> {
+            previewSpeaking = speaking;
+            if (previewButton != null) previewButton.setText(getString(speaking ? R.string.stop_preview : R.string.preview_voice));
+        });
+    }
+    private String selectedVoiceName(VoiceSelection selection, Spinner voiceSpinner) {
+        if (selection.visible.isEmpty() || voiceSpinner.getSelectedItemPosition() < 0) return "";
+        return selection.visible.get(Math.min(voiceSpinner.getSelectedItemPosition(), selection.visible.size() - 1)).name;
     }
 
     private void showSleepDialog() {
@@ -435,14 +540,23 @@ public class MainActivity extends Activity implements ReaderService.Listener {
         return 0;
     }
     private void populateVoiceChoices(AccessibleSpinner spinner, VoiceSelection selection, String localeTag, String engine, android.content.SharedPreferences preferences) {
+        // Which voices exist at all is decided in the service; here they are only narrowed to one language.
         ArrayList<ReaderService.VoiceOption> matching = new ArrayList<>(); for (ReaderService.VoiceOption voice : selection.all) { String language = voice.localeTag.isEmpty() ? Locale.getDefault().getLanguage() : Locale.forLanguageTag(voice.localeTag).getLanguage(); if (localeTag.equalsIgnoreCase(language)) matching.add(voice); }
-        boolean hasSpecificLocaleOnly = false; for (ReaderService.VoiceOption voice : matching) if (isLocaleOnlyName(voice.name) && voice.name.replace('_', '-').contains("-")) { hasSpecificLocaleOnly = true; break; }
-        if (hasSpecificLocaleOnly) { Iterator<ReaderService.VoiceOption> iterator = matching.iterator(); while (iterator.hasNext()) { ReaderService.VoiceOption voice = iterator.next(); if (isLocaleOnlyName(voice.name) && !voice.name.replace('_', '-').contains("-")) iterator.remove(); } }
         selection.visible = new ArrayList<>(); selection.visible.add(new ReaderService.VoiceOption("", getString(R.string.default_voice), localeTag)); selection.visible.addAll(matching);
-        String[] labels = new String[selection.visible.size()]; labels[0] = getString(R.string.default_voice); for (int i = 0; i < matching.size(); i++) labels[i + 1] = matching.get(i).name;
+        String[] labels = new String[selection.visible.size()]; labels[0] = getString(R.string.default_voice); for (int i = 0; i < matching.size(); i++) labels[i + 1] = voiceLabel(matching.get(i).name, i + 1);
         spinner.setAdapter(themedSpinnerAdapter(labels)); String saved = preferences.getString(ReaderService.voicePreferenceKey(engine), ""); int selected = 0; for (int i = 1; i < selection.visible.size(); i++) if (selection.visible.get(i).name.equals(saved)) { selected = i; break; } spinner.setSelection(selected, false); spinner.setEnabled(selection.visible.size() > 1); configureSpinnerAccessibility(spinner, labels);
     }
-    private boolean isLocaleOnlyName(String name) { return name.replace('_', '-').matches("(?i)^[a-z]{2,3}(-[a-z]{2,4})?$"); }
+    // Voice names arrive in every shape: "Milena", "bg-BG-Ivan", "bg-bg-x-ifb-local",
+    // "en-us-x-sfg#female_1-local". The locale prefix and the technical tails are stripped; whatever real
+    // name is left is kept, and only a bare engine code like "ifb", which a screen reader would spell out
+    // letter by letter, is replaced by a number.
+    private String voiceLabel(String name, int number) {
+        String cleaned = name.replace('_', '-');
+        int variant = cleaned.indexOf('#'); if (variant > 0) cleaned = cleaned.substring(0, variant);
+        cleaned = cleaned.replaceAll("(?i)-(local|network)$", "").replaceAll("(?i)^[a-z]{2,3}(-[a-z]{2,4})?-", "").replaceAll("(?i)^x-", "").trim();
+        if (cleaned.length() <= 3 || !cleaned.matches(".*\\p{L}.*")) return getString(R.string.numbered_voice, number);
+        return Character.toUpperCase(cleaned.charAt(0)) + cleaned.substring(1);
+    }
     private void focusDialogTitle(AlertDialog dialog) { View titleView = dialog.findViewById(getResources().getIdentifier("alertTitle", "id", "android")); if (titleView != null) { if (Build.VERSION.SDK_INT >= 28) titleView.setAccessibilityHeading(true); titleView.postDelayed(() -> titleView.performAccessibilityAction(android.view.accessibility.AccessibilityNodeInfo.ACTION_ACCESSIBILITY_FOCUS, null), 220L); } }
     private void focusHeading(View heading) { heading.postDelayed(() -> heading.performAccessibilityAction(android.view.accessibility.AccessibilityNodeInfo.ACTION_ACCESSIBILITY_FOCUS, null), 220L); }
     private ArrayAdapter<String> themedSpinnerAdapter(String[] values) { return new ArrayAdapter<String>(this, android.R.layout.simple_spinner_item, values) { private View style(View view, boolean dropdown) { if (view instanceof TextView) { ((TextView)view).setTextColor(appColor(R.color.text_primary)); ((TextView)view).setTextSize(uiSize(18)); view.setBackgroundColor(appColor(R.color.window_bg)); view.setPadding(dp(12), dp(12), dp(12), dp(12)); view.setImportantForAccessibility(dropdown ? View.IMPORTANT_FOR_ACCESSIBILITY_YES : View.IMPORTANT_FOR_ACCESSIBILITY_NO); view.setAccessibilityDelegate(new View.AccessibilityDelegate() { @Override public void onInitializeAccessibilityNodeInfo(View host, android.view.accessibility.AccessibilityNodeInfo info) { super.onInitializeAccessibilityNodeInfo(host, info); info.setCollectionItemInfo(null); } }); } return view; } @Override public View getView(int position, View convertView, ViewGroup parent) { return style(super.getView(position, convertView, parent), false); } @Override public View getDropDownView(int position, View convertView, ViewGroup parent) { return style(super.getDropDownView(position, convertView, parent), true); } }; }
@@ -455,9 +569,9 @@ public class MainActivity extends Activity implements ReaderService.Listener {
     private void previewInterfaceScale(int oldValue, int newValue) { if (oldValue <= 0 || oldValue == newValue) return; scaleTextViews(appRoot, newValue / (float)oldValue); }
     private void scaleTextViews(View view, float factor) { if (view instanceof TextView && view != body) ((TextView)view).setTextSize(android.util.TypedValue.COMPLEX_UNIT_PX, ((TextView)view).getTextSize() * factor); if (view instanceof ViewGroup) { ViewGroup group = (ViewGroup)view; for (int i = 0; i < group.getChildCount(); i++) scaleTextViews(group.getChildAt(i), factor); } }
     private void addRecent(String uri, String name) {
-        try { JSONArray old = new JSONArray(getPreferences(MODE_PRIVATE).getString("recent", "[]")); JSONArray fresh = new JSONArray(); fresh.put(new JSONObject().put("uri", uri).put("name", name));
+        try { JSONArray old = new JSONArray(documents().getString("recent", "[]")); JSONArray fresh = new JSONArray(); fresh.put(new JSONObject().put("uri", uri).put("name", name));
             for (int i = 0; i < old.length() && fresh.length() < 10; i++) if (!uri.equals(old.getJSONObject(i).optString("uri"))) fresh.put(old.getJSONObject(i));
-            getPreferences(MODE_PRIVATE).edit().putString("recent", fresh.toString()).apply();
+            documents().edit().putString("recent", fresh.toString()).apply();
         } catch (JSONException ignored) {}
     }
     private void showRecent() {
@@ -470,7 +584,7 @@ public class MainActivity extends Activity implements ReaderService.Listener {
         TextView heading = label(getString(R.string.recent_books), 25, true); heading.setPadding(dp(8), 0, 0, 0); if (Build.VERSION.SDK_INT >= 28) heading.setAccessibilityHeading(true); bar.addView(heading, new LinearLayout.LayoutParams(0, -2, 1)); page.addView(bar);
         LinearLayout list = new LinearLayout(this); list.setOrientation(LinearLayout.VERTICAL); ScrollView scrolling = new ScrollView(this); scrolling.addView(list); page.addView(scrolling, new LinearLayout.LayoutParams(-1, 0, 1));
         try {
-            JSONArray recent = new JSONArray(getPreferences(MODE_PRIVATE).getString("recent", "[]")); int count = Math.min(10, recent.length());
+            JSONArray recent = new JSONArray(documents().getString("recent", "[]")); int count = Math.min(10, recent.length());
             if (count == 0) { TextView empty = label(getString(R.string.no_recent), 19, false); empty.setPadding(0, dp(24), 0, dp(24)); list.addView(empty); }
             for (int i = 0; i < count; i++) {
                 JSONObject item = recent.getJSONObject(i); String itemUri = item.optString("uri"), name = withoutTxtExtension(item.optString("name"));
@@ -483,17 +597,23 @@ public class MainActivity extends Activity implements ReaderService.Listener {
         setContentView(page); page.requestApplyInsets(); focusHeading(heading);
     }
     private void showSettingsPage(int headingResource, View content, Runnable applyAction, Runnable closeAction) {
+        showSettingsPage(headingResource, content, null, applyAction, closeAction);
+    }
+    // A view passed as bottomExtra sits outside the scrolling area, directly on top of Apply. Inside the
+    // scroll view it would float wherever the content happens to end, leaving a gap above the button.
+    private void showSettingsPage(int headingResource, View content, View bottomExtra, Runnable applyAction, Runnable closeAction) {
         showingRecent = true; subpageCloseAction = closeAction; int pad = dp(16);
         LinearLayout page = new LinearLayout(this); page.setOrientation(LinearLayout.VERTICAL); page.setPadding(pad, dp(10), pad, dp(16)); page.setBackgroundColor(appColor(R.color.window_bg));
         page.setOnApplyWindowInsetsListener((v, insets) -> { v.setPadding(pad, insets.getSystemWindowInsetTop() + dp(10), pad, insets.getSystemWindowInsetBottom() + dp(16)); return insets; });
         LinearLayout bar = new LinearLayout(this); bar.setGravity(Gravity.CENTER_VERTICAL); ImageButton back = imageButton(android.R.drawable.ic_media_previous, R.string.back); back.setOnClickListener(v -> closeRecent()); bar.addView(back, new LinearLayout.LayoutParams(dp(56), dp(56)));
         TextView heading = label(getString(headingResource), 25, true); heading.setPadding(dp(8), 0, 0, 0); if (Build.VERSION.SDK_INT >= 28) heading.setAccessibilityHeading(true); bar.addView(heading, new LinearLayout.LayoutParams(0, -2, 1)); page.addView(bar);
         ScrollView scrolling = new ScrollView(this); scrolling.addView(content); page.addView(scrolling, new LinearLayout.LayoutParams(-1, 0, 1));
+        if (bottomExtra != null) page.addView(bottomExtra, new LinearLayout.LayoutParams(-1, dp(58)));
         Button apply = button(getString(R.string.apply)); apply.setOnClickListener(v -> applyAction.run()); page.addView(apply, new LinearLayout.LayoutParams(-1, dp(58)));
         appRoot = page; setContentView(page); page.requestApplyInsets(); focusHeading(heading);
     }
     private void removeRecent(String itemUri) {
-        try { JSONArray old = new JSONArray(getPreferences(MODE_PRIVATE).getString("recent", "[]")), fresh = new JSONArray(); for (int i = 0; i < old.length(); i++) if (!itemUri.equals(old.getJSONObject(i).optString("uri"))) fresh.put(old.getJSONObject(i)); getPreferences(MODE_PRIVATE).edit().putString("recent", fresh.toString()).apply(); showRecent(); }
+        try { JSONArray old = new JSONArray(documents().getString("recent", "[]")), fresh = new JSONArray(); for (int i = 0; i < old.length(); i++) if (!itemUri.equals(old.getJSONObject(i).optString("uri"))) fresh.put(old.getJSONObject(i)); documents().edit().putString("recent", fresh.toString()).apply(); showRecent(); }
         catch (JSONException e) { toast(getString(R.string.no_recent)); }
     }
     // Opening a book from the recent list must not go through closeRecent(): that one marks the activity as
@@ -522,7 +642,7 @@ public class MainActivity extends Activity implements ReaderService.Listener {
                 if (selected == null) clearCurrentDocument();
                 else if (!selected.uri.equals(currentUri)) {
                     currentUri = selected.uri; currentName = selected.name;
-                    getPreferences(MODE_PRIVATE).edit().putString("last_uri", currentUri).apply();
+                    documents().edit().putString("last_uri", currentUri).apply();
                     if (reader == null) pendingText = selected.text; else finishLoad(selected.text);
                 }
                 buildUi(); if (reader != null) reader.setListener(this); returnToReader();
@@ -531,14 +651,14 @@ public class MainActivity extends Activity implements ReaderService.Listener {
     }
     private boolean isInRecent(String uri) {
         try {
-            JSONArray recent = new JSONArray(getPreferences(MODE_PRIVATE).getString("recent", "[]"));
+            JSONArray recent = new JSONArray(documents().getString("recent", "[]"));
             for (int i = 0; i < recent.length(); i++) if (uri.equals(recent.getJSONObject(i).optString("uri"))) return true;
         } catch (JSONException ignored) {}
         return false;
     }
     private RecentDocument selectDocumentForReader() {
         try {
-            JSONArray recent = new JSONArray(getPreferences(MODE_PRIVATE).getString("recent", "[]"));
+            JSONArray recent = new JSONArray(documents().getString("recent", "[]"));
             for (int i = 0; i < Math.min(10, recent.length()); i++) {
                 JSONObject item = recent.getJSONObject(i); String uri = item.optString("uri");
                 if (uri.isEmpty() || (!currentUri.isEmpty() && !currentUri.equals(uri))) continue;
@@ -563,7 +683,7 @@ public class MainActivity extends Activity implements ReaderService.Listener {
     }
     private void clearCurrentDocument() {
         cancelAutomaticResume(true); resumeAfterFilePickerLoad = false; pendingText = null; currentUri = ""; currentName = "";
-        getPreferences(MODE_PRIVATE).edit().remove("last_uri").apply();
+        documents().edit().remove("last_uri").apply();
         if (reader != null) reader.clearDocument();
     }
     @android.annotation.SuppressLint("GestureBackNavigation")
@@ -571,7 +691,7 @@ public class MainActivity extends Activity implements ReaderService.Listener {
     @Override protected void onSaveInstanceState(Bundle outState) { outState.putBoolean(STATE_RESUME_AFTER_RECREATE, resumeAfterRecreate); super.onSaveInstanceState(outState); }
     private void toast(String value) { Toast.makeText(this, value == null ? getString(R.string.open_failed) : value, Toast.LENGTH_LONG).show(); }
     @Override protected void onDestroy() {
-        destroyed = true; automaticResumeHandler.removeCallbacksAndMessages(null); seekHandler.removeCallbacksAndMessages(null);
+        destroyed = true; automaticResumeHandler.removeCallbacksAndMessages(null); seekHandler.removeCallbacksAndMessages(null); previewHandler.removeCallbacksAndMessages(null);
         if (reader != null) reader.setListener(null);
         if (bindRequested) { bindRequested = false; try { unbindService(connection); } catch (IllegalArgumentException ignored) {} }
         io.shutdownNow(); super.onDestroy();

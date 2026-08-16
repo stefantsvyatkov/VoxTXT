@@ -1,4 +1,4 @@
-package bg.simpletxtreader;
+package bg.stefantsvyatkov.voxtxt;
 
 import android.app.*;
 import android.content.*;
@@ -14,16 +14,23 @@ import java.text.BreakIterator;
 import java.util.*;
 
 public class ReaderService extends Service implements TextToSpeech.OnInitListener {
-    public static final String ACTION_PLAY = "bg.simpletxtreader.PLAY";
-    public static final String ACTION_PAUSE = "bg.simpletxtreader.PAUSE";
-    public static final String ACTION_PREVIOUS = "bg.simpletxtreader.PREVIOUS";
-    public static final String ACTION_NEXT = "bg.simpletxtreader.NEXT";
-    public static final String ACTION_STOP = "bg.simpletxtreader.STOP";
+    public static final String ACTION_PLAY = "bg.stefantsvyatkov.voxtxt.PLAY";
+    public static final String ACTION_PAUSE = "bg.stefantsvyatkov.voxtxt.PAUSE";
+    public static final String ACTION_PREVIOUS = "bg.stefantsvyatkov.voxtxt.PREVIOUS";
+    public static final String ACTION_NEXT = "bg.stefantsvyatkov.voxtxt.NEXT";
+    public static final String ACTION_STOP = "bg.stefantsvyatkov.voxtxt.STOP";
     private static final String CHANNEL = "reader_playback";
     private static final int NOTIFICATION_ID = 42;
     private static final String SLEEP_STATE = "sleep_rewind_state";
+    private static final String PREVIEW_UTTERANCE = "voice-preview";
+    private static final String END_UTTERANCE = "end-of-text";
+    private static final long PREVIEW_RETRY_MS = 700L;
+    // Long enough to be heard as a deliberate pause, short enough that nobody wonders whether the reading
+    // has stalled. The same value is used before the text and before the closing sound.
+    private static final long CUE_GAP_MS = 600L;
+    private static final String PARAM_VOICE_NAME = "voiceName";
 
-    public interface Listener { void onPlaybackState(int index, int count, boolean playing); void onPlaybackError(String message); }
+    public interface Listener { void onPlaybackState(int index, int count, boolean playing); void onPlaybackError(String message); void onPreviewState(boolean speaking); }
     public class ReaderBinder extends Binder {
         public ReaderService service() { return ReaderService.this; }
     }
@@ -42,8 +49,20 @@ public class ReaderService extends Service implements TextToSpeech.OnInitListene
     private final Handler sleepHandler = new Handler(Looper.getMainLooper());
     private final Handler focusHandler = new Handler(Looper.getMainLooper());
     private final Handler lifecycleHandler = new Handler(Looper.getMainLooper());
+    private final Handler cueHandler = new Handler(Looper.getMainLooper());
+    private MediaPlayer cuePlayer;
+    private boolean reachedEnd;
     private final ArrayList<Range> sentences = new ArrayList<>();
-    private TextToSpeech tts;
+    private TextToSpeech tts, previewTts, previewSpeaker;
+    private String previewEngine = "", previewVoiceName = "", previewText, activePreviewUtterance = "";
+    private int previewRate, previewPitch, previewVolume, previewRetries;
+    private long previewSerial;
+    private final UtteranceProgressListener previewProgress = new UtteranceProgressListener() {
+        @Override public void onStart(String id) {}
+        @Override public void onDone(String id) { handler.post(() -> previewFinished(id)); }
+        @Override public void onStop(String id, boolean interrupted) { handler.post(() -> previewStopped(id, interrupted)); }
+        @Override public void onError(String id) { handler.post(() -> previewFinished(id)); }
+    };
     private AudioTrack silentAudioTrack;
     private final ArrayList<EngineOption> allEngines = new ArrayList<>();
     private final Map<String, List<VoiceOption>> voiceCache = new HashMap<>();
@@ -58,7 +77,6 @@ public class ReaderService extends Service implements TextToSpeech.OnInitListene
     private static final long SLEEP_FADE_UPDATE_MS = 100L;
     private int volumeBeforeFade = -1, pendingVolumeRestore = -1;
     private int sleepStartSentence = -1, sleepFadeStartSentence = -1, completedSleepMinutes;
-    private boolean settingsDirty = true;
     private String positionKeyUri = "", positionKey = "";
     private boolean sleepRewindAvailable, captureSleepStartOnPlay;
     private int transientRetries;
@@ -145,42 +163,47 @@ public class ReaderService extends Service implements TextToSpeech.OnInitListene
     }
 
     public void load(String newUri, String newTitle, String newText, int position) {
-        pause(); uri = newUri; title = newTitle; text = newText; current = Math.max(0, position);
+        pause(); reachedEnd = false; uri = newUri; title = newTitle; text = newText; current = Math.max(0, position);
         if (sleepRewindAvailable && !newUri.equals(getSharedPreferences(SLEEP_STATE, MODE_PRIVATE).getString("uri", ""))) clearSleepRewindState();
         split(); current = Math.min(current, Math.max(0, sentences.size() - 1));
         savePosition(); notifyState();
     }
     public void clearDocument() {
-        pause(); uri = ""; title = ""; text = ""; current = 0; sentences.clear();
+        pause(); reachedEnd = false; uri = ""; title = ""; text = ""; current = 0; sentences.clear();
         notifyState(); stopForeground(true);
     }
     public void play() {
         if (sleepRewindAvailable) { clearSleepRewindState(); notifyState(); }
         if (!ready) { pendingPlay = true; return; }
         if (sentences.isEmpty()) return;
+        // The last sentence has already been read out; playing again would simply repeat it.
+        if (reachedEnd) { error(getString(R.string.no_more_text)); return; }
         if (captureSleepStartOnPlay) { sleepStartSentence = current; captureSleepStartOnPlay = false; }
-        applySettingsIfNeeded(); transientRetries = 0; playing = true;
+        applySettings(); transientRetries = 0; playing = true;
         if (!requestAudioFocus()) { playing = false; notifyState(); updateNotification(); return; }
         startSilentPlayback(); promoteMediaSession(); updateMediaSession(); startService(new Intent(this, ReaderService.class)); startForeground(NOTIFICATION_ID, notification());
+        if (current == 0 && cuesEnabled()) { notifyState(); updateNotification(); openWithCue(); return; }
         speakCurrent();
     }
     public void pause() {
-        pendingPlay = false; playing = false; activeUtterance = ""; utteranceSerial++; handler.removeCallbacksAndMessages(null); if (tts != null) tts.stop(); stopSilentPlayback();
+        pendingPlay = false; playing = false; activeUtterance = ""; utteranceSerial++; handler.removeCallbacksAndMessages(null); stopCue(); if (tts != null) tts.stop(); stopSilentPlayback();
         restoreVolumeAfterFade(); abandonAudioFocus(); savePosition(); if (!sentences.isEmpty()) updateNotification(); notifyState();
     }
     public void move(int delta) {
-        boolean resume = playing; playing = false; activeUtterance = ""; utteranceSerial++; handler.removeCallbacksAndMessages(null); if (tts != null) tts.stop();
+        // stopCue() matters here: moving while the opening cue or the closing gap is still running would
+        // otherwise leave a pending callback that speaks a second time, or stops playback right after.
+        boolean resume = playing; reachedEnd = false; playing = false; activeUtterance = ""; utteranceSerial++; handler.removeCallbacksAndMessages(null); stopCue(); if (tts != null) tts.stop();
         if (!sentences.isEmpty()) current = Math.max(0, Math.min(current + delta, sentences.size() - 1));
         savePosition(); notifyState(); if (resume) { playing = true; speakCurrent(); } else updateNotification();
     }
     public void seekTo(int index) {
-        playing = false; activeUtterance = ""; utteranceSerial++; handler.removeCallbacksAndMessages(null); if (tts != null) tts.stop(); stopSilentPlayback();
+        reachedEnd = false; playing = false; activeUtterance = ""; utteranceSerial++; handler.removeCallbacksAndMessages(null); stopCue(); if (tts != null) tts.stop(); stopSilentPlayback();
         if (!sentences.isEmpty()) current = Math.max(0, Math.min(index, sentences.size() - 1));
         savePosition(); notifyState(); updateNotification();
     }
     public void updateSettings(boolean playAfterUpdate) {
         String wantedEngine = getSharedPreferences("reader_settings", MODE_PRIVATE).getString("engine", "");
-        pause(); settingsDirty = true;
+        pause();
         if (!wantedEngine.equals(activeEngine)) { pendingPlay = playAfterUpdate; initializeTts(wantedEngine); }
         else { if (ready) applySettings(); if (playAfterUpdate) play(); }
     }
@@ -206,9 +229,10 @@ public class ReaderService extends Service implements TextToSpeech.OnInitListene
     }
     private void speakCurrent() {
         if (!playing || current >= sentences.size()) { pause(); return; }
-        applySettingsIfNeeded(); Range range = sentences.get(current);
+        applySettings(); Range range = sentences.get(current);
         activeUtterance = "sentence-" + current + "-" + (++utteranceSerial); String utterance = activeUtterance;
         Bundle parameters = new Bundle(); parameters.putFloat(TextToSpeech.Engine.KEY_PARAM_VOLUME, getSharedPreferences("reader_settings", MODE_PRIVATE).getInt("volume_percent", 50) / 100f);
+        addVoiceParam(parameters, getSharedPreferences("reader_settings", MODE_PRIVATE).getString(voicePreferenceKey(activeEngine), ""));
         int result = tts.speak(text.substring(range.start, range.end).trim(), TextToSpeech.QUEUE_FLUSH, parameters, utterance);
         if (result == TextToSpeech.ERROR) { pause(); error(getString(R.string.tts_error)); }
         notifyState(); updateNotification();
@@ -216,14 +240,56 @@ public class ReaderService extends Service implements TextToSpeech.OnInitListene
     private void finishCurrentSentence(String utterance) {
         if (!playing || !utterance.equals(activeUtterance)) return;
         transientRetries = 0; activeUtterance = ""; current++; savePosition();
-        if (current >= sentences.size()) { current = Math.max(0, sentences.size() - 1); pause(); return; }
+        if (current >= sentences.size()) { current = Math.max(0, sentences.size() - 1); reachedEnd = true; announceEnd(); return; }
         int delay = getSharedPreferences("reader_settings", MODE_PRIVATE).getInt("sentence_pause", 0);
         handler.postDelayed(ReaderService.this::speakCurrent, delay);
+    }
+    // The end is signalled one way or the other, never both: the closing sound when it is switched on,
+    // the spoken words when it is not.
+    private void announceEnd() {
+        savePosition(); notifyState();
+        if (cuesEnabled()) { closeWithCue(); return; }
+        activeUtterance = END_UTTERANCE;
+        android.content.SharedPreferences p = getSharedPreferences("reader_settings", MODE_PRIVATE);
+        Bundle parameters = new Bundle(); parameters.putFloat(TextToSpeech.Engine.KEY_PARAM_VOLUME, p.getInt("volume_percent", 50) / 100f);
+        addVoiceParam(parameters, p.getString(voicePreferenceKey(activeEngine), ""));
+        if (tts == null || tts.speak(getString(R.string.end_of_text), TextToSpeech.QUEUE_FLUSH, parameters, END_UTTERANCE) == TextToSpeech.ERROR) pause();
     }
     private void retryCurrentSentence(String utterance) {
         if (!utterance.equals(activeUtterance)) return;
         activeUtterance = "";
         if (playing && transientRetries++ < 3) handler.postDelayed(ReaderService.this::speakCurrent, 1200); else { pause(); error(getString(R.string.tts_error)); }
+    }
+    private boolean cuesEnabled() { return getSharedPreferences("reader_settings", MODE_PRIVATE).getBoolean("text_cues", true); }
+    // Opening: cue, then the gap, then the text. Closing: text, then the gap, then the cue.
+    private void openWithCue() {
+        playCue(true, () -> cueHandler.postDelayed(() -> { if (playing) speakCurrent(); }, CUE_GAP_MS));
+    }
+    private void closeWithCue() {
+        cueHandler.postDelayed(() -> playCue(false, this::pause), CUE_GAP_MS);
+    }
+    // Played at the same volume as the speech, so the cue never jumps out next to the voice.
+    private void playCue(boolean opening, Runnable after) {
+        stopCue();
+        try {
+            MediaPlayer player = MediaPlayer.create(this, opening ? R.raw.cue_start : R.raw.cue_end);
+            if (player == null) { after.run(); return; }
+            float volume = Math.max(0, Math.min(100, getSharedPreferences("reader_settings", MODE_PRIVATE).getInt("volume_percent", 50))) / 100f;
+            player.setVolume(volume, volume);
+            player.setOnCompletionListener(finished -> { releaseCue(finished); after.run(); });
+            player.setOnErrorListener((failed, what, extra) -> { releaseCue(failed); after.run(); return true; });
+            cuePlayer = player;
+            player.start();
+        } catch (Exception unavailable) { after.run(); }
+    }
+    private void releaseCue(MediaPlayer player) {
+        if (cuePlayer == player) cuePlayer = null;
+        try { player.release(); } catch (Exception ignored) {}
+    }
+    private void stopCue() {
+        cueHandler.removeCallbacksAndMessages(null);
+        MediaPlayer player = cuePlayer; cuePlayer = null;
+        if (player != null) { try { player.stop(); } catch (Exception ignored) {} try { player.release(); } catch (Exception ignored) {} }
     }
     private void startSilentPlayback() {
         if (silentAudioTrack != null) return;
@@ -239,30 +305,151 @@ public class ReaderService extends Service implements TextToSpeech.OnInitListene
         try { track.pause(); track.setPlaybackHeadPosition(0); track.play(); promoteMediaSession(); updateMediaSession(); }
         catch (IllegalStateException ignored) { stopSilentPlayback(); startSilentPlayback(); promoteMediaSession(); updateMediaSession(); }
     }
-    // Rate, pitch and voice stay on the TextToSpeech instance until they are changed, so re-reading the
-    // preferences and scanning the whole voice list before every single sentence is wasted work.
-    private void applySettingsIfNeeded() { if (settingsDirty) applySettings(); }
     private void applySettings() {
-        settingsDirty = false;
         android.content.SharedPreferences p = getSharedPreferences("reader_settings", MODE_PRIVATE);
         tts.setSpeechRate(speechRate(p.getInt("rate_percent", 20))); tts.setPitch(speechPitch(p.getInt("pitch_percent", 20)));
-        String selectedVoice = p.getString(voicePreferenceKey(activeEngine), "");
-        if (selectedVoice.isEmpty()) { Voice defaultVoice = tts.getDefaultVoice(); if (defaultVoice != null) tts.setVoice(defaultVoice); }
-        else { Set<Voice> voices = tts.getVoices(); if (voices != null) for (Voice voice : voices) if (selectedVoice.equals(voice.getName())) { tts.setVoice(voice); break; } }
+        applyVoice(tts, p.getString(voicePreferenceKey(activeEngine), ""));
+    }
+    // setVoice() is only half the story. Android forwards the chosen voice to the engine only when the
+    // engine answered its loadVoice call with SUCCESS, and the default implementation of that call accepts
+    // nothing but names that parse as a language tag - so an engine whose voices are called "Alexander" or
+    // "Gergana" never receives the choice and keeps reading with its own default. setLanguage() is not a way
+    // out either: it overwrites the stored voice with the default one for that language.
+    // What does get through is the speak() parameter bundle, which the framework merges over its own
+    // parameters, so the voice is also named there before every sentence. See addVoiceParam().
+    private void applyVoice(TextToSpeech engine, String selectedVoice) {
+        if (selectedVoice.isEmpty()) { Voice defaultVoice = engine.getDefaultVoice(); if (defaultVoice != null) engine.setVoice(defaultVoice); return; }
+        Set<Voice> voices = engine.getVoices();
+        if (voices != null) for (Voice voice : voices) if (selectedVoice.equals(voice.getName())) { engine.setVoice(voice); return; }
+    }
+    // PARAM_VOICE_NAME is the framework's own key for the voice of a single utterance. The constant is not
+    // public API, but the key itself is what TextToSpeechService reads out of the bundle, and passing a
+    // string in a Bundle is not a restricted call.
+    private void addVoiceParam(Bundle parameters, String selectedVoice) {
+        if (!selectedVoice.isEmpty()) parameters.putString(PARAM_VOICE_NAME, selectedVoice);
+    }
+
+    // Lets the voice page speak a sample before anything is saved. The sample is the sentence the reader is
+    // on, so the voice is judged on the actual book instead of a canned phrase in the wrong language.
+    public void previewVoice(String engine, String voiceName, int ratePercent, int pitchPercent, int volumePercent, String fallbackSample) {
+        // Drop the previous sample first: pausing flushes it, and its callback must not schedule a retry
+        // over the one that is about to start.
+        previewSpeaker = null; previewText = null; previewRetries = 0; activePreviewUtterance = "";
+        pause();
+        String spoken = fallbackSample;
+        if (!sentences.isEmpty()) {
+            Range range = sentences.get(Math.min(current, sentences.size() - 1));
+            String sentence = text.substring(range.start, range.end).trim();
+            if (!sentence.isEmpty()) spoken = sentence.length() > 240 ? sentence.substring(0, 240) : sentence;
+        }
+        String wanted = engine == null ? "" : engine;
+        if (wanted.equals(activeEngine) && ready && tts != null) { speakPreview(tts, voiceName, ratePercent, pitchPercent, volumePercent, spoken); return; }
+        if (previewTts != null && wanted.equals(previewEngine)) { speakPreview(previewTts, voiceName, ratePercent, pitchPercent, volumePercent, spoken); return; }
+        stopPreview();
+        previewEngine = wanted;
+        final String sample = spoken;
+        final TextToSpeech[] holder = new TextToSpeech[1];
+        TextToSpeech.OnInitListener init = status -> handler.post(() -> {
+            if (previewTts != holder[0] || holder[0] == null) return;
+            if (status != TextToSpeech.SUCCESS) { error(getString(R.string.tts_unavailable)); stopPreview(); return; }
+            holder[0].setOnUtteranceProgressListener(previewProgress);
+            speakPreview(holder[0], voiceName, ratePercent, pitchPercent, volumePercent, sample);
+        });
+        holder[0] = wanted.isEmpty() ? new TextToSpeech(this, init) : new TextToSpeech(this, init, wanted);
+        previewTts = holder[0];
+    }
+    private void speakPreview(TextToSpeech engine, String voiceName, int ratePercent, int pitchPercent, int volumePercent, String spoken) {
+        previewSpeaker = engine; previewVoiceName = voiceName == null ? "" : voiceName; previewText = spoken;
+        previewRate = ratePercent; previewPitch = pitchPercent; previewVolume = volumePercent;
+        engine.setSpeechRate(speechRate(ratePercent)); engine.setPitch(speechPitch(pitchPercent));
+        applyVoice(engine, previewVoiceName);
+        activePreviewUtterance = PREVIEW_UTTERANCE + "-" + (++previewSerial);
+        Bundle parameters = new Bundle(); parameters.putFloat(TextToSpeech.Engine.KEY_PARAM_VOLUME, Math.max(0, Math.min(100, volumePercent)) / 100f);
+        addVoiceParam(parameters, previewVoiceName);
+        if (engine.speak(spoken, TextToSpeech.QUEUE_FLUSH, parameters, activePreviewUtterance) == TextToSpeech.ERROR) { error(getString(R.string.tts_error)); notifyPreview(false); return; }
+        notifyPreview(true);
+    }
+    private boolean isPreview(String id) { return id != null && id.startsWith(PREVIEW_UTTERANCE); }
+    private void previewFinished(String id) {
+        if (!id.equals(activePreviewUtterance)) return;
+        activePreviewUtterance = ""; previewRetries = 0; notifyPreview(false);
+    }
+    // A book being read survives the screen reader talking over it because an interrupted sentence is
+    // spoken again; the sample gets the same treatment instead of simply disappearing.
+    private void previewStopped(String id, boolean interrupted) {
+        if (!id.equals(activePreviewUtterance)) return;
+        activePreviewUtterance = "";
+        if (!interrupted || playing || previewSpeaker == null || previewText == null || previewRetries >= 2) { notifyPreview(false); return; }
+        previewRetries++;
+        TextToSpeech engine = previewSpeaker; String voice = previewVoiceName, spoken = previewText;
+        int ratePercent = previewRate, pitchPercent = previewPitch, volumePercent = previewVolume;
+        handler.postDelayed(() -> { if (!playing && previewSpeaker == engine) speakPreview(engine, voice, ratePercent, pitchPercent, volumePercent, spoken); }, PREVIEW_RETRY_MS);
+    }
+    private void notifyPreview(boolean speaking) { if (listener != null) listener.onPreviewState(speaking); }
+    public void stopPreview() {
+        previewSpeaker = null; previewText = null; previewRetries = 0; activePreviewUtterance = "";
+        if (tts != null) tts.stop();
+        TextToSpeech instance = previewTts; previewTts = null; previewEngine = "";
+        if (instance != null) { try { instance.stop(); instance.shutdown(); } catch (Exception ignored) {} }
+        notifyPreview(false);
     }
     public static String voicePreferenceKey(String engine) { return "voice_for_" + (engine == null || engine.isEmpty() ? "system_default" : engine); }
+    // The whole voice list is decided here, so there is one place to reason about instead of rules spread
+    // between the service and the screen. Engines name and duplicate their voices very differently, so the
+    // list is built twice if it has to be: once with the availability filters, and if that leaves nothing,
+    // once without them. An engine whose voices all look unavailable is still better shown than hidden.
     private List<VoiceOption> filteredVoices(TextToSpeech source) {
         Set<Voice> voices = source.getVoices(); if (voices == null || voices.isEmpty()) return Collections.emptyList();
+        List<VoiceOption> usable = collectVoices(voices, true);
+        return usable.isEmpty() ? collectVoices(voices, false) : usable;
+    }
+    private List<VoiceOption> collectVoices(Set<Voice> voices, boolean onlyAvailable) {
         TreeMap<String, VoiceOption> unique = new TreeMap<>(String.CASE_INSENSITIVE_ORDER);
+        Map<String, Integer> bestPerLanguage = new HashMap<>();
         for (Voice voice : voices) {
-            if (voice == null || voice.getName() == null || voice.getName().trim().isEmpty() || voice.isNetworkConnectionRequired()) continue;
-            Set<String> features = voice.getFeatures();
-            if (features != null && (features.contains(TextToSpeech.Engine.KEY_FEATURE_NOT_INSTALLED) || features.contains(TextToSpeech.Engine.KEY_FEATURE_NETWORK_SYNTHESIS))) continue;
-            String localeTag = voice.getLocale() == null ? "" : voice.getLocale().toLanguageTag();
-            VoiceOption option = new VoiceOption(voice.getName(), voice.getName(), localeTag);
-            if (!unique.containsKey(voice.getName())) unique.put(voice.getName(), option);
+            if (voice == null || voice.getName() == null || voice.getName().trim().isEmpty()) continue;
+            if (onlyAvailable && !isAvailableOffline(voice)) continue;
+            String name = voice.getName(), localeTag = voice.getLocale() == null ? "" : voice.getLocale().toLanguageTag();
+            String language = languageOf(localeTag, name);
+            Integer best = bestPerLanguage.get(language);
+            if (best == null || nameRank(name) < best) bestPerLanguage.put(language, nameRank(name));
+            // "bg-bg-x-ifb-local" and "bg-bg-x-ifb-network" are the same voice; keep one entry per variant,
+            // preferring the one that does not need the network.
+            String key = variantKey(name);
+            VoiceOption existing = unique.get(key);
+            if (existing == null || (isLocalName(name) && !isLocalName(existing.name))) unique.put(key, new VoiceOption(name, name, localeTag));
         }
-        return new ArrayList<>(unique.values());
+        List<VoiceOption> result = new ArrayList<>();
+        // Per language only the most precise kind of entry survives. A named voice beats every stand-in for
+        // "this engine's default", and among those a regional one beats a bare language code. Nothing is
+        // dropped when it is the only thing a language has, so no language can disappear from the list.
+        for (VoiceOption option : unique.values())
+            if (nameRank(option.name) <= bestPerLanguage.get(languageOf(option.localeTag, option.name))) result.add(option);
+        return result;
+    }
+    private int nameRank(String name) {
+        if (isLanguageAlias(name)) return 2;                                            // "bg-BG-language"
+        if (!isBareLanguageName(name)) return 0;                                        // "Milena", "bg-bg-x-ifb-local"
+        return name.indexOf('-') >= 0 || name.indexOf('_') >= 0 ? 1 : 3;                // "bg-BG" beats "bul"
+    }
+    private boolean isAvailableOffline(Voice voice) {
+        if (voice.isNetworkConnectionRequired()) return false;
+        Set<String> features = voice.getFeatures();
+        return features == null || !(features.contains(TextToSpeech.Engine.KEY_FEATURE_NOT_INSTALLED) || features.contains(TextToSpeech.Engine.KEY_FEATURE_NETWORK_SYNTHESIS));
+    }
+    private String languageOf(String localeTag, String name) {
+        String tag = localeTag.isEmpty() ? name : localeTag;
+        String language = Locale.forLanguageTag(tag.replace('_', '-')).getLanguage();
+        return (language.isEmpty() ? tag : language).toLowerCase(Locale.ROOT);
+    }
+    private boolean isLanguageAlias(String name) { return name.toLowerCase(Locale.ROOT).matches("^[a-z]{2,3}([-_][a-z]{2,4})?[-_]language$"); }
+    private boolean isBareLanguageName(String name) { return name.replace('_', '-').matches("(?i)^[a-z]{2,3}(-[a-z]{2,4})?$"); }
+    private boolean isLocalName(String name) { return name.toLowerCase(Locale.ROOT).endsWith("-local"); }
+    private String variantKey(String name) {
+        String lower = name.toLowerCase(Locale.ROOT);
+        if (lower.endsWith("-local")) return lower.substring(0, lower.length() - 6);
+        if (lower.endsWith("-network")) return lower.substring(0, lower.length() - 8);
+        return lower;
     }
     private float speechRate(int sliderPercent) {
         int value = Math.max(0, Math.min(100, sliderPercent));
@@ -274,7 +461,7 @@ public class ReaderService extends Service implements TextToSpeech.OnInitListene
     }
 
     private void initializeTts(String engine) {
-        ready = false; settingsDirty = true; if (tts != null) { tts.stop(); tts.shutdown(); }
+        ready = false; if (tts != null) { tts.stop(); tts.shutdown(); }
         activeEngine = engine == null ? "" : engine;
         tts = activeEngine.isEmpty() ? new TextToSpeech(this, this) : new TextToSpeech(this, this, activeEngine);
     }
@@ -294,9 +481,9 @@ public class ReaderService extends Service implements TextToSpeech.OnInitListene
         tts.setAudioAttributes(new AudioAttributes.Builder().setUsage(AudioAttributes.USAGE_MEDIA).setContentType(AudioAttributes.CONTENT_TYPE_SPEECH).build());
         tts.setOnUtteranceProgressListener(new UtteranceProgressListener() {
             @Override public void onStart(String id) { handler.post(() -> { if (id.equals(activeUtterance)) refreshSilentPlaybackPriority(); }); }
-            @Override public void onDone(String id) { handler.post(() -> finishCurrentSentence(id)); }
-            @Override public void onStop(String id, boolean interrupted) { handler.post(() -> { if (playing && interrupted && id.equals(activeUtterance)) retryCurrentSentence(id); }); }
-            @Override public void onError(String id) { handler.post(() -> retryCurrentSentence(id)); }
+            @Override public void onDone(String id) { handler.post(() -> { if (isPreview(id)) previewFinished(id); else if (END_UTTERANCE.equals(id)) pause(); else finishCurrentSentence(id); }); }
+            @Override public void onStop(String id, boolean interrupted) { handler.post(() -> { if (isPreview(id)) { previewStopped(id, interrupted); return; } if (END_UTTERANCE.equals(id)) { pause(); return; } if (playing && interrupted && id.equals(activeUtterance)) retryCurrentSentence(id); }); }
+            @Override public void onError(String id) { handler.post(() -> { if (isPreview(id)) previewFinished(id); else if (END_UTTERANCE.equals(id)) pause(); else retryCurrentSentence(id); }); }
         });
         notifyState(); if (pendingPlay) { pendingPlay = false; play(); }
     }
@@ -381,6 +568,9 @@ public class ReaderService extends Service implements TextToSpeech.OnInitListene
         if (audioFocusRequest != null) audioManager.abandonAudioFocusRequest(audioFocusRequest);
         hasAudioFocus = false;
     }
+    // The fade is the 1.0-beta2 one, unchanged: the device volume falls step by step over the ten seconds.
+    // Everything tried instead of it - a gain effect on the speech session, a scheduled curve - sounded
+    // worse on a real phone. The only additions are the guards around setStreamVolume().
     private void beginSleepFade() {
         if (sleepDeadline <= 0) return;
         if (!playing) { sleepHandler.postDelayed(this::finishSleepTimer, Math.max(0, sleepDeadline - SystemClock.elapsedRealtime())); return; }
@@ -418,6 +608,7 @@ public class ReaderService extends Service implements TextToSpeech.OnInitListene
         // Short technical pause so the tail of the interrupted sentence is not heard again at full volume.
         if (restoreVolume >= 0) { pendingVolumeRestore = restoreVolume; sleepHandler.postDelayed(this::flushVolumeRestore, 250L); }
     }
+    // Called from pause(), so stopping in the middle of a fade-out hands the device volume straight back.
     private void restoreVolumeAfterFade() {
         flushVolumeRestore();
         if (volumeBeforeFade >= 0) { setMusicVolume(volumeBeforeFade); volumeBeforeFade = -1; forgetFadeVolume(); }
@@ -489,7 +680,7 @@ public class ReaderService extends Service implements TextToSpeech.OnInitListene
         return b.build();
     }
     private void updateNotification() { if (!sentences.isEmpty()) ((NotificationManager)getSystemService(NOTIFICATION_SERVICE)).notify(NOTIFICATION_ID, notification()); }
-    @Override public void onDestroy() { sleepHandler.removeCallbacksAndMessages(null); lifecycleHandler.removeCallbacksAndMessages(null); pause(); flushVolumeRestore(); stopSilentPlayback(); if (audioManager != null) audioManager.unregisterAudioDeviceCallback(audioDeviceCallback); try { unregisterReceiver(becomingNoisyReceiver); } catch (IllegalArgumentException ignored) {} if (mediaSession != null) mediaSession.release(); if (tts != null) tts.shutdown(); super.onDestroy(); }
+    @Override public void onDestroy() { sleepHandler.removeCallbacksAndMessages(null); lifecycleHandler.removeCallbacksAndMessages(null); pause(); stopCue(); stopPreview(); flushVolumeRestore(); stopSilentPlayback(); if (audioManager != null) audioManager.unregisterAudioDeviceCallback(audioDeviceCallback); try { unregisterReceiver(becomingNoisyReceiver); } catch (IllegalArgumentException ignored) {} if (mediaSession != null) mediaSession.release(); if (tts != null) tts.shutdown(); super.onDestroy(); }
 
     public static class Range { public final int start, end; Range(int start, int end) { this.start = start; this.end = end; } }
 }

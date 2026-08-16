@@ -12,6 +12,9 @@
     <string name="sentence_number">Sentence number</string>
     <string name="invalid_sentence">Enter a number from 1 to %1$d.</string>
     <string name="no_text">No readable text</string>
+    <string name="end_of_text">End of text.</string>
+    <string name="no_more_text">No more text.</string>
+    <string name="text_cues">Sound at the start and end of the text</string>
     <string name="previous">Previous</string>
     <string name="next">Next</string>
     <string name="previous_sentence">Previous sentence</string>
@@ -43,6 +46,10 @@
     <string name="voice_settings">Voice settings</string>
     <string name="speech_engine">Speech engine</string>
     <string name="voice">Voice</string>
+    <string name="numbered_voice">Voice %1$d</string>
+    <string name="preview_voice">Preview voice</string>
+    <string name="stop_preview">Stop the preview</string>
+    <string name="voice_preview_sample">This is how the selected voice sounds.</string>
     <string name="percentage_spoken">%1$d percent</string>
     <string name="book_progress">File progress</string>
     <string name="pause_for_settings">Pause playback outside reader</string>
@@ -61,7 +68,7 @@
     <string name="delete">Delete</string>
     <string name="remove_book">Remove %1$s from recent files</string>
     <string name="no_recent">No recently opened files</string>
-    <string name="file_too_large">The file is too large (maximum 15 MB).</string>
+    <string name="file_too_large">The file is too large (maximum 5 MB).</string>
     <string name="file_empty">The file is empty.</string>
     <string name="file_unavailable">The file is unavailable.</string>
     <string name="open_failed">Could not open this file.</string>

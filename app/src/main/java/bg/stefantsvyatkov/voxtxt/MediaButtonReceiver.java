@@ -1,4 +1,4 @@
-package bg.simpletxtreader;
+package bg.stefantsvyatkov.voxtxt;
 
 import android.content.BroadcastReceiver;
 import android.content.Context;
