@@ -1,0 +1,17 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!--
+    Android 12 and later. Same rule for both a cloud backup and a direct transfer to another phone:
+    settings travel, what the reader knows about files does not. See backup_rules.xml.
+-->
+<data-extraction-rules>
+    <cloud-backup>
+        <exclude domain="sharedpref" path="reader_documents.xml"/>
+        <exclude domain="sharedpref" path="book_positions.xml"/>
+        <exclude domain="sharedpref" path="sleep_rewind_state.xml"/>
+    </cloud-backup>
+    <device-transfer>
+        <exclude domain="sharedpref" path="reader_documents.xml"/>
+        <exclude domain="sharedpref" path="book_positions.xml"/>
+        <exclude domain="sharedpref" path="sleep_rewind_state.xml"/>
+    </device-transfer>
+</data-extraction-rules>

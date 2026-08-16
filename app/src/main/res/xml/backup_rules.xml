@@ -1,0 +1,13 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!--
+    Android 8 to 11. What the reader knows about files is deliberately left out of the backup: the
+    permissions to open those files are revoked on uninstall and never come back, so a restored list of
+    recent books opens nothing, and a restored position drops the reader into the middle of a book the
+    user may no longer remember. A new installation starts clean. Settings are worth keeping and are
+    backed up as before.
+-->
+<full-backup-content>
+    <exclude domain="sharedpref" path="reader_documents.xml"/>
+    <exclude domain="sharedpref" path="book_positions.xml"/>
+    <exclude domain="sharedpref" path="sleep_rewind_state.xml"/>
+</full-backup-content>

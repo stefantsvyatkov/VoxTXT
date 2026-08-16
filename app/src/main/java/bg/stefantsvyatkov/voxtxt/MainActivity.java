@@ -23,6 +23,11 @@ import java.util.concurrent.*;
 public class MainActivity extends Activity implements ReaderService.Listener {
     private static final int OPEN_TEXT = 10, MAX_BYTES = 5 * 1024 * 1024;
     private static final long AUTOMATIC_RESUME_DELAY_MS = 1500L, PREVIEW_DELAY_MS = 800L;
+    // Each fast seek step schedules the next one only after it has finished its work, so the interval used
+    // to be padded by however long redrawing the document took - roughly 150 ms on a full book. Redrawing is
+    // cheap now and the interval is honoured exactly, which made the old default of 200 ms feel twice as
+    // fast. This is the value that gives the pace the setting always seemed to have.
+    private static final int FAST_SEEK_DEFAULT_MS = 400, FAST_SEEK_MIN_MS = 200, FAST_SEEK_MAX_MS = 600;
     private static final String STATE_RESUME_AFTER_RECREATE = "resume_after_recreate";
     private static final String DOCUMENT_PREFS = "reader_documents";
     private static final String[] CYRILLIC_LANGUAGES = {"bg", "ru", "uk", "sr", "mk", "be"};
@@ -193,6 +198,10 @@ public class MainActivity extends Activity implements ReaderService.Listener {
     private android.content.SharedPreferences getSettings() { return getSharedPreferences("reader_settings", MODE_PRIVATE); }
     // Explicitly named so it no longer depends on the class package the way Activity.getPreferences() does.
     private android.content.SharedPreferences documents() { return getSharedPreferences(DOCUMENT_PREFS, MODE_PRIVATE); }
+    // Clamped, because a value saved under the earlier range could sit below what the slider now offers.
+    private int fastSeekInterval(android.content.SharedPreferences p) {
+        return Math.max(FAST_SEEK_MIN_MS, Math.min(FAST_SEEK_MAX_MS, p.getInt("fast_seek_interval", FAST_SEEK_DEFAULT_MS)));
+    }
 
     private void chooseFile() {
         pausePlaybackOutsideReader();
@@ -379,11 +388,17 @@ public class MainActivity extends Activity implements ReaderService.Listener {
         button.setOnClickListener(v -> { if (reader != null && !fastSeeking) { boolean announce = !reader.isPlaying(); reader.move(direction); if (announce) announceCurrentSentence(); } });
         button.setOnLongClickListener(v -> {
             if (reader == null || reader.getCount() == 0) return false;
+            // A resume left over from the previous release must not fire while this seek is under way.
+            cancelAutomaticResume(true);
             fastSeeking = true; resumeAfterFastSeek = reader.isPlaying(); if (resumeAfterFastSeek) reader.pause();
-            Runnable repeated = new Runnable() { @Override public void run() { if (!fastSeeking || reader == null) return; reader.move(direction * 5); if (getSettings().getBoolean("seek_vibration", true)) button.performHapticFeedback(HapticFeedbackConstants.CLOCK_TICK); seekHandler.postDelayed(this, getSettings().getInt("fast_seek_interval", 200)); } };
+            Runnable repeated = new Runnable() { @Override public void run() { if (!fastSeeking || reader == null) return; reader.move(direction * 5); if (getSettings().getBoolean("seek_vibration", true)) button.performHapticFeedback(HapticFeedbackConstants.CLOCK_TICK); seekHandler.postDelayed(this, fastSeekInterval(getSettings())); } };
             repeated.run(); return true;
         });
-        button.setOnTouchListener((v, event) -> { if ((event.getAction() == MotionEvent.ACTION_UP || event.getAction() == MotionEvent.ACTION_CANCEL) && fastSeeking) { fastSeeking = false; seekHandler.removeCallbacksAndMessages(null); boolean resume = resumeAfterFastSeek; resumeAfterFastSeek = false; announceCurrentSentence(); if (resume && reader != null) scheduleAutomaticPlayback(); } return false; });
+        // One rule for both kinds of seeking: while the book is silent the screen reader says where the user
+        // has landed, and while it is reading nothing interrupts it - the text itself is the answer. Letting
+        // go resumes at once; the delay used elsewhere exists to leave room for an announcement, and there
+        // is none here.
+        button.setOnTouchListener((v, event) -> { if ((event.getAction() == MotionEvent.ACTION_UP || event.getAction() == MotionEvent.ACTION_CANCEL) && fastSeeking) { fastSeeking = false; seekHandler.removeCallbacksAndMessages(null); boolean resume = resumeAfterFastSeek; resumeAfterFastSeek = false; if (resume && reader != null) reader.play(); else announceCurrentSentence(); } return false; });
     }
     private void announceCurrentSentence() { if (reader == null || reader.getCount() == 0) return; status.announceForAccessibility(getString(R.string.sentence_position, reader.getCurrent() + 1)); }
 
@@ -407,7 +422,7 @@ public class MainActivity extends Activity implements ReaderService.Listener {
         AccessibleSpinner themeSpinner = new AccessibleSpinner(this); String[] themeValues = {"system", "light", "dark"}; String[] themeLabels = {getString(R.string.theme_system), getString(R.string.theme_light), getString(R.string.theme_dark)}; themeSpinner.setAdapter(themedSpinnerAdapter(themeLabels)); int themePosition = Arrays.asList(themeValues).indexOf(p.getString("theme", "system")); themeSpinner.setSelection(Math.max(0, themePosition), false); box.addView(themeSpinner); configureSpinnerAccessibility(themeSpinner, themeLabels);
         SeekBar font = seek(box, R.string.document_font_size, 14, 32, p.getInt("font_size", 23));
         TextView interfaceValueLabel = addSliderHeader(box, R.string.interface_font_size, 18, dp(12)); SeekBar interfaceFont = new SeekBar(this); interfaceFont.setMax(20); int originalInterfaceScale = p.getInt("interface_scale", 100); interfaceFont.setProgress(Math.max(0, Math.min(20, (originalInterfaceScale - 50) / 5))); sliderValues.put(interfaceFont, interfaceValueLabel); updateSliderPercentValue(interfaceFont); box.addView(interfaceFont);
-        SeekBar fastSeekInterval = millisecondSeek(box, R.string.fast_seek_interval, 100, 500, 50, p.getInt("fast_seek_interval", 200));
+        SeekBar fastSeekInterval = millisecondSeek(box, R.string.fast_seek_interval, FAST_SEEK_MIN_MS, FAST_SEEK_MAX_MS, 50, fastSeekInterval(p));
         CheckBox pauseForSettings = new CheckBox(this); pauseForSettings.setText(R.string.pause_for_settings); pauseForSettings.setTextSize(uiSize(18)); pauseForSettings.setChecked(p.getBoolean("pause_for_settings", true)); pauseForSettings.setPadding(0, dp(10), 0, dp(6)); box.addView(pauseForSettings, new LinearLayout.LayoutParams(-1, -2));
         CheckBox seekVibration = new CheckBox(this); seekVibration.setText(R.string.seek_vibration); seekVibration.setTextSize(uiSize(18)); seekVibration.setChecked(p.getBoolean("seek_vibration", true)); seekVibration.setPadding(0, dp(6), 0, dp(10)); box.addView(seekVibration, new LinearLayout.LayoutParams(-1, -2));
         CheckBox preventDeviceAutoplay = new CheckBox(this); preventDeviceAutoplay.setText(R.string.prevent_device_autoplay); preventDeviceAutoplay.setTextSize(uiSize(18)); preventDeviceAutoplay.setChecked(p.getBoolean("prevent_device_autoplay", true)); preventDeviceAutoplay.setPadding(0, dp(6), 0, dp(10)); box.addView(preventDeviceAutoplay, new LinearLayout.LayoutParams(-1, -2));

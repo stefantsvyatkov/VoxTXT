@@ -78,8 +78,11 @@ public class ReaderService extends Service implements TextToSpeech.OnInitListene
     private int volumeBeforeFade = -1, pendingVolumeRestore = -1;
     private int sleepStartSentence = -1, sleepFadeStartSentence = -1, completedSleepMinutes;
     private String positionKeyUri = "", positionKey = "";
+    private Voice cachedVoice;
+    private String cachedVoiceName = "";
     private boolean sleepRewindAvailable, captureSleepStartOnPlay;
-    private int transientRetries;
+    private int transientRetries, engineRestarts;
+    private boolean pausedByFocusLoss;
     private long utteranceSerial;
     private String activeUtterance = "";
     private MediaSession mediaSession;
@@ -106,8 +109,15 @@ public class ReaderService extends Service implements TextToSpeech.OnInitListene
             for (AudioDeviceInfo device : removedDevices) knownAudioOutputs.remove(device.getId());
         }
     };
+    // A phone call, a navigation prompt or an assistant takes the sound away for a moment and gives it back.
+    // Only that short interruption resumes on its own, and only if the reading was running when it started.
+    // A permanent loss - another player taking over - stays paused, because the user moved on to something
+    // else. The focus request itself is kept during a short loss; abandoning it would mean never hearing
+    // that the sound came back.
     private final AudioManager.OnAudioFocusChangeListener focusListener = change -> {
-        if (change == AudioManager.AUDIOFOCUS_LOSS || change == AudioManager.AUDIOFOCUS_LOSS_TRANSIENT) pause();
+        if (change == AudioManager.AUDIOFOCUS_LOSS) { pause(); return; }
+        if (change == AudioManager.AUDIOFOCUS_LOSS_TRANSIENT) { boolean wasPlaying = playing; pause(false); pausedByFocusLoss = wasPlaying; return; }
+        if (change == AudioManager.AUDIOFOCUS_GAIN && pausedByFocusLoss) { pausedByFocusLoss = false; play(); }
     };
 
     @Override public void onCreate() {
@@ -179,19 +189,21 @@ public class ReaderService extends Service implements TextToSpeech.OnInitListene
         // The last sentence has already been read out; playing again would simply repeat it.
         if (reachedEnd) { error(getString(R.string.no_more_text)); return; }
         if (captureSleepStartOnPlay) { sleepStartSentence = current; captureSleepStartOnPlay = false; }
-        applySettings(); transientRetries = 0; playing = true;
+        applySettings(); transientRetries = 0; engineRestarts = 0; pausedByFocusLoss = false; playing = true;
         if (!requestAudioFocus()) { playing = false; notifyState(); updateNotification(); return; }
         startSilentPlayback(); promoteMediaSession(); updateMediaSession(); startService(new Intent(this, ReaderService.class)); startForeground(NOTIFICATION_ID, notification());
         if (current == 0 && cuesEnabled()) { notifyState(); updateNotification(); openWithCue(); return; }
         speakCurrent();
     }
-    public void pause() {
+    public void pause() { pausedByFocusLoss = false; pause(true); }
+    private void pause(boolean releaseFocus) {
         pendingPlay = false; playing = false; activeUtterance = ""; utteranceSerial++; handler.removeCallbacksAndMessages(null); stopCue(); if (tts != null) tts.stop(); stopSilentPlayback();
-        restoreVolumeAfterFade(); abandonAudioFocus(); savePosition(); if (!sentences.isEmpty()) updateNotification(); notifyState();
+        restoreVolumeAfterFade(); if (releaseFocus) abandonAudioFocus(); savePosition(); if (!sentences.isEmpty()) updateNotification(); notifyState();
     }
     public void move(int delta) {
-        // stopCue() matters here: moving while the opening cue or the closing gap is still running would
-        // otherwise leave a pending callback that speaks a second time, or stops playback right after.
+        // Moving cancels whatever the previous step left pending. Without this, stopping a sentence number
+        // that is still being announced counts as "finished" and starts the reading in the middle of a new
+        // seek, and a cue left running speaks or stops playback afterwards.
         boolean resume = playing; reachedEnd = false; playing = false; activeUtterance = ""; utteranceSerial++; handler.removeCallbacksAndMessages(null); stopCue(); if (tts != null) tts.stop();
         if (!sentences.isEmpty()) current = Math.max(0, Math.min(current + delta, sentences.size() - 1));
         savePosition(); notifyState(); if (resume) { playing = true; speakCurrent(); } else updateNotification();
@@ -227,19 +239,23 @@ public class ReaderService extends Service implements TextToSpeech.OnInitListene
             if (!text.substring(start, end).trim().isEmpty()) sentences.add(new Range(start, end));
         if (sentences.isEmpty() && !text.trim().isEmpty()) sentences.add(new Range(0, text.length()));
     }
+    // Only what a single sentence needs. Speech rate, pitch and the voice are not set again here: Android
+    // keeps them and sends them along with every request anyway, so re-applying them - and scanning the
+    // engine's entire voice list to do it - was work that changed nothing in what is heard.
     private void speakCurrent() {
         if (!playing || current >= sentences.size()) { pause(); return; }
-        applySettings(); Range range = sentences.get(current);
+        Range range = sentences.get(current);
         activeUtterance = "sentence-" + current + "-" + (++utteranceSerial); String utterance = activeUtterance;
-        Bundle parameters = new Bundle(); parameters.putFloat(TextToSpeech.Engine.KEY_PARAM_VOLUME, getSharedPreferences("reader_settings", MODE_PRIVATE).getInt("volume_percent", 50) / 100f);
-        addVoiceParam(parameters, getSharedPreferences("reader_settings", MODE_PRIVATE).getString(voicePreferenceKey(activeEngine), ""));
+        android.content.SharedPreferences p = getSharedPreferences("reader_settings", MODE_PRIVATE);
+        Bundle parameters = new Bundle(); parameters.putFloat(TextToSpeech.Engine.KEY_PARAM_VOLUME, p.getInt("volume_percent", 50) / 100f);
+        addVoiceParam(parameters, p.getString(voicePreferenceKey(activeEngine), ""));
         int result = tts.speak(text.substring(range.start, range.end).trim(), TextToSpeech.QUEUE_FLUSH, parameters, utterance);
         if (result == TextToSpeech.ERROR) { pause(); error(getString(R.string.tts_error)); }
         notifyState(); updateNotification();
     }
     private void finishCurrentSentence(String utterance) {
         if (!playing || !utterance.equals(activeUtterance)) return;
-        transientRetries = 0; activeUtterance = ""; current++; savePosition();
+        transientRetries = 0; engineRestarts = 0; activeUtterance = ""; current++; savePosition();
         if (current >= sentences.size()) { current = Math.max(0, sentences.size() - 1); reachedEnd = true; announceEnd(); return; }
         int delay = getSharedPreferences("reader_settings", MODE_PRIVATE).getInt("sentence_pause", 0);
         handler.postDelayed(ReaderService.this::speakCurrent, delay);
@@ -258,7 +274,13 @@ public class ReaderService extends Service implements TextToSpeech.OnInitListene
     private void retryCurrentSentence(String utterance) {
         if (!utterance.equals(activeUtterance)) return;
         activeUtterance = "";
-        if (playing && transientRetries++ < 3) handler.postDelayed(ReaderService.this::speakCurrent, 1200); else { pause(); error(getString(R.string.tts_error)); }
+        if (!playing) return;
+        if (transientRetries++ < 3) { handler.postDelayed(ReaderService.this::speakCurrent, 1200); return; }
+        // The engine lives in its own process and the system can kill it. Then the connection this app holds
+        // is dead and asking it to speak again will never work, however many times it is asked - it has to
+        // be built anew. One rebuild per failure, and only then does the reading give up.
+        if (engineRestarts++ < 1) { transientRetries = 0; pendingPlay = true; initializeTts(activeEngine); return; }
+        pause(); error(getString(R.string.tts_error));
     }
     private boolean cuesEnabled() { return getSharedPreferences("reader_settings", MODE_PRIVATE).getBoolean("text_cues", true); }
     // Opening: cue, then the gap, then the text. Closing: text, then the gap, then the cue.
@@ -319,8 +341,17 @@ public class ReaderService extends Service implements TextToSpeech.OnInitListene
     // parameters, so the voice is also named there before every sentence. See addVoiceParam().
     private void applyVoice(TextToSpeech engine, String selectedVoice) {
         if (selectedVoice.isEmpty()) { Voice defaultVoice = engine.getDefaultVoice(); if (defaultVoice != null) engine.setVoice(defaultVoice); return; }
+        // Finding the voice means asking the engine for its entire list - hundreds of entries on some of
+        // them. The answer cannot change while the same voice stays chosen on the same engine, so it is
+        // kept and the search happens once instead of on every start of reading.
+        if (engine == tts && cachedVoice != null && selectedVoice.equals(cachedVoiceName)) { engine.setVoice(cachedVoice); return; }
         Set<Voice> voices = engine.getVoices();
-        if (voices != null) for (Voice voice : voices) if (selectedVoice.equals(voice.getName())) { engine.setVoice(voice); return; }
+        if (voices == null) return;
+        for (Voice voice : voices) if (selectedVoice.equals(voice.getName())) {
+            engine.setVoice(voice);
+            if (engine == tts) { cachedVoice = voice; cachedVoiceName = selectedVoice; }
+            return;
+        }
     }
     // PARAM_VOICE_NAME is the framework's own key for the voice of a single utterance. The constant is not
     // public API, but the key itself is what TextToSpeechService reads out of the bundle, and passing a
@@ -461,7 +492,7 @@ public class ReaderService extends Service implements TextToSpeech.OnInitListene
     }
 
     private void initializeTts(String engine) {
-        ready = false; if (tts != null) { tts.stop(); tts.shutdown(); }
+        ready = false; cachedVoice = null; cachedVoiceName = ""; if (tts != null) { tts.stop(); tts.shutdown(); }
         activeEngine = engine == null ? "" : engine;
         tts = activeEngine.isEmpty() ? new TextToSpeech(this, this) : new TextToSpeech(this, this, activeEngine);
     }
