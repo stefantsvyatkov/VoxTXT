@@ -32,7 +32,7 @@ public class MainActivity extends Activity implements ReaderService.Listener {
     private ScrollView scroll;
     private View appRoot;
     private ReaderService reader;
-    private boolean bound, loading, destroyed;
+    private boolean bound, bindRequested, loading, destroyed;
     private String currentUri = "", currentName = "";
     private String pendingText;
     private final Handler seekHandler = new Handler(Looper.getMainLooper());
@@ -40,8 +40,10 @@ public class MainActivity extends Activity implements ReaderService.Listener {
     private boolean fastSeeking, resumeAfterFastSeek;
     private boolean pausedAutomaticallyOutsideReader, automaticResumePending, resumeAfterRecreate, resumeAfterFilePickerLoad;
     private boolean showingRecent;
+    private String renderedText;
+    private BackgroundColorSpan highlightSpan;
     private Runnable subpageCloseAction;
-    private boolean updatingBookProgress, resumeAfterProgressSeek;
+    private boolean updatingBookProgress, resumeAfterProgressSeek, draggingBookProgress;
     private final IdentityHashMap<SeekBar, TextView> sliderValues = new IdentityHashMap<>();
     private interface SpinnerSelectionObserver { void onSelected(int position); }
     private static class VoiceSelection { ArrayList<ReaderService.VoiceOption> all = new ArrayList<>(), visible = new ArrayList<>(); }
@@ -111,7 +113,7 @@ public class MainActivity extends Activity implements ReaderService.Listener {
         if ("light".equals(selectedTheme)) setTheme(R.style.AppThemeLight); else if ("dark".equals(selectedTheme)) setTheme(R.style.AppThemeDark);
         super.onCreate(state); if (Build.VERSION.SDK_INT >= 33) getOnBackInvokedDispatcher().registerOnBackInvokedCallback(android.window.OnBackInvokedDispatcher.PRIORITY_DEFAULT, () -> { if (showingRecent) closeRecent(); else finishAfterTransition(); }); buildUi();
         resumeAfterRecreate = state != null && state.getBoolean(STATE_RESUME_AFTER_RECREATE, false);
-        bindService(new Intent(this, ReaderService.class), connection, BIND_AUTO_CREATE);
+        bindRequested = bindService(new Intent(this, ReaderService.class), connection, BIND_AUTO_CREATE);
         if (Build.VERSION.SDK_INT >= 33 && checkSelfPermission(Manifest.permission.POST_NOTIFICATIONS) != PackageManager.PERMISSION_GRANTED)
             requestPermissions(new String[]{Manifest.permission.POST_NOTIFICATIONS}, 11);
         Uri incoming = Intent.ACTION_VIEW.equals(getIntent().getAction()) ? getIntent().getData() : null;
@@ -124,6 +126,7 @@ public class MainActivity extends Activity implements ReaderService.Listener {
 
     private void buildUi() {
         showingRecent = false;
+        renderedText = null; sliderValues.clear();
         int pad = dp(16);
         LinearLayout root = new LinearLayout(this); root.setOrientation(LinearLayout.VERTICAL); root.setPadding(pad, dp(10), pad, dp(12));
         root.setOnApplyWindowInsetsListener((v, insets) -> { v.setPadding(pad, insets.getSystemWindowInsetTop() + dp(10), pad, insets.getSystemWindowInsetBottom() + dp(12)); return insets; });
@@ -152,9 +155,12 @@ public class MainActivity extends Activity implements ReaderService.Listener {
         bookProgress = new BookProgressSeekBar(this);
         sliderValues.put(bookProgress, progressValue);
         bookProgress.setOnSeekBarChangeListener(new SeekBar.OnSeekBarChangeListener() {
-            public void onStartTrackingTouch(SeekBar seekBar) { resumeAfterProgressSeek = reader != null && reader.isPlaying(); if (resumeAfterProgressSeek) reader.pause(); }
-            public void onStopTrackingTouch(SeekBar seekBar) { if (resumeAfterProgressSeek && reader != null) scheduleAutomaticPlayback(); resumeAfterProgressSeek = false; }
-            public void onProgressChanged(SeekBar seekBar, int progress, boolean fromUser) { updateBookProgressDescription(progress); if (fromUser && !updatingBookProgress) seekToBookPercent(progress, false); }
+            public void onStartTrackingTouch(SeekBar seekBar) { draggingBookProgress = true; resumeAfterProgressSeek = reader != null && reader.isPlaying(); if (resumeAfterProgressSeek) reader.pause(); }
+            public void onStopTrackingTouch(SeekBar seekBar) { draggingBookProgress = false; seekToBookPercent(seekBar.getProgress(), false); if (resumeAfterProgressSeek && reader != null) scheduleAutomaticPlayback(); resumeAfterProgressSeek = false; }
+            // A finger drag fires this for every percent; seeking there would stop the engine and repaint the
+            // whole document dozens of times, so the drag is applied once on release. Keyboard and TalkBack
+            // changes arrive without tracking events and still take effect immediately.
+            public void onProgressChanged(SeekBar seekBar, int progress, boolean fromUser) { updateBookProgressDescription(progress); if (fromUser && !updatingBookProgress && !draggingBookProgress) seekToBookPercent(progress, false); }
         });
         LinearLayout playerButtons = new LinearLayout(this); playerButtons.setGravity(Gravity.CENTER);
         voiceButton = imageButton(R.drawable.ic_voice, R.string.choose_voice); previous = imageButton(R.drawable.ic_previous, R.string.previous_sentence); play = imageButton(R.drawable.ic_play, R.string.play_sentence); next = imageButton(R.drawable.ic_next, R.string.next_sentence); sleepButton = imageButton(R.drawable.ic_sleep, R.string.open_sleep_timer); sleepRewindButton = button("");
@@ -234,10 +240,20 @@ public class MainActivity extends Activity implements ReaderService.Listener {
     @Override public void onPlaybackError(String message) { runOnUiThread(() -> toast(message)); }
     private void showCurrent(int index, int count) {
         if (reader == null || reader.getText().isEmpty()) return;
-        if (count == 0) { body.setText(reader.getText()); body.setContentDescription(getString(R.string.no_text)); status.setText(R.string.no_text); return; }
-        ReaderService.Range r = reader.currentRange(); SpannableString marked = new SpannableString(reader.getText());
-        marked.setSpan(new BackgroundColorSpan(appColor(R.color.highlight)), r.start, r.end, Spannable.SPAN_EXCLUSIVE_EXCLUSIVE); body.setText(marked);
-        body.setContentDescription(reader.getText().substring(r.start, r.end).trim());
+        String document = reader.getText();
+        if (count == 0) { renderedText = null; body.setText(document); body.setContentDescription(getString(R.string.no_text)); status.setText(R.string.no_text); return; }
+        ReaderService.Range r = reader.currentRange();
+        // The document text is handed to the TextView once; every following sentence only moves the
+        // highlight span. Re-creating a SpannableString of the whole book per sentence is what made
+        // large files stutter.
+        if (document != renderedText || !(body.getText() instanceof Spannable)) {
+            renderedText = document; highlightSpan = new BackgroundColorSpan(appColor(R.color.highlight));
+            body.setText(new SpannableString(document), TextView.BufferType.SPANNABLE);
+        }
+        Spannable marked = (Spannable)body.getText();
+        marked.removeSpan(highlightSpan);
+        marked.setSpan(highlightSpan, r.start, r.end, Spannable.SPAN_EXCLUSIVE_EXCLUSIVE);
+        body.setContentDescription(document.substring(r.start, r.end).trim());
         status.setText(getString(R.string.sentence_count, index + 1, count));
         int percent = count <= 1 ? 0 : Math.round(index * 100f / (count - 1));
         updatingBookProgress = true; bookProgress.setProgress(percent); updatingBookProgress = false; updateBookProgressDescription(percent);
@@ -307,7 +323,7 @@ public class MainActivity extends Activity implements ReaderService.Listener {
 
     private void showSettings() {
         android.content.SharedPreferences p = getSettings();
-        pausePlaybackOutsideReader();
+        pausePlaybackOutsideReader(); sliderValues.clear();
         LinearLayout box = new LinearLayout(this); box.setOrientation(LinearLayout.VERTICAL); box.setPadding(dp(20), 0, dp(20), 0);
         TextView languageLabel = label(getString(R.string.language), 18, true); languageLabel.setPadding(0, dp(12), 0, 0); box.addView(languageLabel);
         AccessibleSpinner languageSpinner = new AccessibleSpinner(this); String[] languageValues = {"system", "en", "bg"}; String[] languageLabels = {getString(R.string.language_system), getString(R.string.language_english), getString(R.string.language_bulgarian)}; languageSpinner.setAdapter(themedSpinnerAdapter(languageLabels)); int languagePosition = Arrays.asList(languageValues).indexOf(p.getString("language", "system")); languageSpinner.setSelection(Math.max(0, languagePosition), false); box.addView(languageSpinner); configureSpinnerAccessibility(languageSpinner, languageLabels);
@@ -322,18 +338,18 @@ public class MainActivity extends Activity implements ReaderService.Listener {
         final int[] previewScale = {originalInterfaceScale}; final boolean[] keepPreview = {false};
         interfaceFont.setOnSeekBarChangeListener(new SeekBar.OnSeekBarChangeListener() {
             public void onStartTrackingTouch(SeekBar seekBar) {} public void onStopTrackingTouch(SeekBar seekBar) {}
-            public void onProgressChanged(SeekBar seekBar, int progress, boolean fromUser) { int value = 50 + progress * 5; updateSliderPercentValue(seekBar); if (value != previewScale[0]) { previewInterfaceScale(previewScale[0], value, null); previewScale[0] = value; } }
+            public void onProgressChanged(SeekBar seekBar, int progress, boolean fromUser) { int value = 50 + progress * 5; updateSliderPercentValue(seekBar); if (value != previewScale[0]) { previewInterfaceScale(previewScale[0], value); previewScale[0] = value; } }
         });
         Runnable applyOptions = () -> {
             int fontValue = seekValue(font), interfaceValue = 50 + interfaceFont.getProgress() * 5; String selectedTheme = themeValues[themeSpinner.getSelectedItemPosition()], selectedLanguage = languageValues[languageSpinner.getSelectedItemPosition()]; boolean themeChanged = !selectedTheme.equals(p.getString("theme", "system")), languageChanged = !selectedLanguage.equals(p.getString("language", "system"));
             p.edit().putInt("font_size", fontValue).putInt("interface_scale", interfaceValue).putInt("fast_seek_interval", seekValue(fastSeekInterval)).putString("theme", selectedTheme).putString("language", selectedLanguage).putBoolean("pause_for_settings", pauseForSettings.isChecked()).putBoolean("seek_vibration", seekVibration.isChecked()).putBoolean("prevent_device_autoplay", preventDeviceAutoplay.isChecked()).apply(); keepPreview[0] = true; body.setTextSize(fontValue); if (languageChanged) applyLanguage(selectedLanguage); if (themeChanged || languageChanged) { resumeAfterRecreate = pausedAutomaticallyOutsideReader; pausedAutomaticallyOutsideReader = false; subpageCloseAction = null; getWindow().getDecorView().post(this::recreate); } else closeRecent();
         };
-        Runnable closeOptions = () -> { if (!keepPreview[0] && previewScale[0] != originalInterfaceScale) previewInterfaceScale(previewScale[0], originalInterfaceScale, null); };
+        Runnable closeOptions = () -> { if (!keepPreview[0]) previewInterfaceScale(previewScale[0], originalInterfaceScale); };
         showSettingsPage(R.string.settings, box, applyOptions, closeOptions);
     }
 
     private void showVoiceSettings() {
-        if (reader == null) return; android.content.SharedPreferences p = getSettings(); pausePlaybackOutsideReader();
+        if (reader == null) return; android.content.SharedPreferences p = getSettings(); pausePlaybackOutsideReader(); sliderValues.clear();
         ArrayList<ReaderService.EngineOption> engines = new ArrayList<>(); engines.add(new ReaderService.EngineOption("", getString(R.string.default_voice))); engines.addAll(reader.getEngineOptions());
         LinearLayout box = new LinearLayout(this); box.setOrientation(LinearLayout.VERTICAL); box.setPadding(dp(20), 0, dp(20), dp(8));
         TextView engineLabel = label(getString(R.string.speech_engine), 18, true); engineLabel.setPadding(0, dp(12), 0, 0); box.addView(engineLabel);
@@ -436,7 +452,7 @@ public class MainActivity extends Activity implements ReaderService.Listener {
         if (Build.VERSION.SDK_INT >= 33) { android.os.LocaleList locales = "system".equals(language) ? android.os.LocaleList.getEmptyLocaleList() : android.os.LocaleList.forLanguageTags(language); android.app.LocaleManager manager = getSystemService(android.app.LocaleManager.class); if (manager != null && !manager.getApplicationLocales().equals(locales)) manager.setApplicationLocales(locales); }
         else { Locale locale = "system".equals(language) ? android.content.res.Resources.getSystem().getConfiguration().getLocales().get(0) : Locale.forLanguageTag(language); android.content.res.Configuration configuration = new android.content.res.Configuration(getResources().getConfiguration()); configuration.setLocale(locale); getResources().updateConfiguration(configuration, getResources().getDisplayMetrics()); }
     }
-    private void previewInterfaceScale(int oldValue, int newValue, AlertDialog dialog) { if (oldValue <= 0 || oldValue == newValue) return; float factor = newValue / (float)oldValue; scaleTextViews(appRoot, factor); if (dialog != null && dialog.getWindow() != null) scaleTextViews(dialog.getWindow().getDecorView(), factor); }
+    private void previewInterfaceScale(int oldValue, int newValue) { if (oldValue <= 0 || oldValue == newValue) return; scaleTextViews(appRoot, newValue / (float)oldValue); }
     private void scaleTextViews(View view, float factor) { if (view instanceof TextView && view != body) ((TextView)view).setTextSize(android.util.TypedValue.COMPLEX_UNIT_PX, ((TextView)view).getTextSize() * factor); if (view instanceof ViewGroup) { ViewGroup group = (ViewGroup)view; for (int i = 0; i < group.getChildCount(); i++) scaleTextViews(group.getChildAt(i), factor); } }
     private void addRecent(String uri, String name) {
         try { JSONArray old = new JSONArray(getPreferences(MODE_PRIVATE).getString("recent", "[]")); JSONArray fresh = new JSONArray(); fresh.put(new JSONObject().put("uri", uri).put("name", name));
@@ -459,7 +475,7 @@ public class MainActivity extends Activity implements ReaderService.Listener {
             for (int i = 0; i < count; i++) {
                 JSONObject item = recent.getJSONObject(i); String itemUri = item.optString("uri"), name = withoutTxtExtension(item.optString("name"));
                 LinearLayout row = new LinearLayout(this); row.setGravity(Gravity.CENTER_VERTICAL); row.setPadding(0, dp(6), 0, dp(6));
-                Button open = compactButton(name); open.setGravity(Gravity.START | Gravity.CENTER_VERTICAL); open.setTextSize(uiSize(19)); open.setContentDescription(name); open.setOnClickListener(v -> { closeRecent(); loadUri(Uri.parse(itemUri), true); });
+                Button open = compactButton(name); open.setGravity(Gravity.START | Gravity.CENTER_VERTICAL); open.setTextSize(uiSize(19)); open.setContentDescription(name); open.setOnClickListener(v -> openRecent(itemUri));
                 ImageButton remove = imageButton(android.R.drawable.ic_menu_delete, R.string.delete); remove.setContentDescription(getString(R.string.remove_book, name)); remove.setOnClickListener(v -> removeRecent(itemUri));
                 row.addView(open, new LinearLayout.LayoutParams(0, dp(64), 1)); LinearLayout.LayoutParams removeParams = new LinearLayout.LayoutParams(dp(56), dp(56)); removeParams.setMargins(dp(10), 0, 0, 0); row.addView(remove, removeParams); list.addView(row);
             }
@@ -480,9 +496,23 @@ public class MainActivity extends Activity implements ReaderService.Listener {
         try { JSONArray old = new JSONArray(getPreferences(MODE_PRIVATE).getString("recent", "[]")), fresh = new JSONArray(); for (int i = 0; i < old.length(); i++) if (!itemUri.equals(old.getJSONObject(i).optString("uri"))) fresh.put(old.getJSONObject(i)); getPreferences(MODE_PRIVATE).edit().putString("recent", fresh.toString()).apply(); showRecent(); }
         catch (JSONException e) { toast(getString(R.string.no_recent)); }
     }
+    // Opening a book from the recent list must not go through closeRecent(): that one marks the activity as
+    // loading before the tap is handled, which used to swallow the requested file and keep the current one.
+    private void openRecent(String itemUri) {
+        if (loading) return;
+        Runnable action = subpageCloseAction; subpageCloseAction = null; if (action != null) action.run();
+        buildUi(); if (reader != null) reader.setListener(this);
+        resumeAfterFilePickerLoad = pausedAutomaticallyOutsideReader; pausedAutomaticallyOutsideReader = false;
+        loadUri(Uri.parse(itemUri), true);
+    }
     private void closeRecent() {
         if (!showingRecent || loading) return;
         Runnable action = subpageCloseAction; subpageCloseAction = null; if (action != null) action.run();
+        // Returning from a settings page leaves the open document untouched, so rebuild the reader without
+        // reading and decoding the whole file from storage again.
+        if (!currentUri.isEmpty() && reader != null && reader.getCount() > 0 && isInRecent(currentUri)) {
+            buildUi(); reader.setListener(this); returnToReader(); return;
+        }
         loading = true;
         io.execute(() -> {
             RecentDocument selected = selectDocumentForReader();
@@ -498,6 +528,13 @@ public class MainActivity extends Activity implements ReaderService.Listener {
                 buildUi(); if (reader != null) reader.setListener(this); returnToReader();
             });
         });
+    }
+    private boolean isInRecent(String uri) {
+        try {
+            JSONArray recent = new JSONArray(getPreferences(MODE_PRIVATE).getString("recent", "[]"));
+            for (int i = 0; i < recent.length(); i++) if (uri.equals(recent.getJSONObject(i).optString("uri"))) return true;
+        } catch (JSONException ignored) {}
+        return false;
     }
     private RecentDocument selectDocumentForReader() {
         try {
@@ -533,5 +570,10 @@ public class MainActivity extends Activity implements ReaderService.Listener {
     @Override public void onBackPressed() { if (showingRecent) closeRecent(); else super.onBackPressed(); }
     @Override protected void onSaveInstanceState(Bundle outState) { outState.putBoolean(STATE_RESUME_AFTER_RECREATE, resumeAfterRecreate); super.onSaveInstanceState(outState); }
     private void toast(String value) { Toast.makeText(this, value == null ? getString(R.string.open_failed) : value, Toast.LENGTH_LONG).show(); }
-    @Override protected void onDestroy() { destroyed = true; automaticResumeHandler.removeCallbacksAndMessages(null); if (bound) { reader.setListener(null); unbindService(connection); } io.shutdownNow(); super.onDestroy(); }
+    @Override protected void onDestroy() {
+        destroyed = true; automaticResumeHandler.removeCallbacksAndMessages(null); seekHandler.removeCallbacksAndMessages(null);
+        if (reader != null) reader.setListener(null);
+        if (bindRequested) { bindRequested = false; try { unbindService(connection); } catch (IllegalArgumentException ignored) {} }
+        io.shutdownNow(); super.onDestroy();
+    }
 }

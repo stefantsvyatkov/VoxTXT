@@ -50,7 +50,6 @@
     <string name="prevent_device_autoplay">Prevent automatic playback when an audio device connects</string>
     <string name="open_sleep_timer">Sleep timer</string>
     <string name="sleep_timer">Sleep timer</string>
-    <string name="rewind_sleep_timer">Return to sleep timer start</string>
     <plurals name="rewind_sleep_minutes"><item quantity="one">Return by %1$d minute</item><item quantity="other">Return by %1$d minutes</item></plurals>
     <string name="custom_timer">Custom</string>
     <string name="off">Off</string>

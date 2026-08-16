@@ -17,12 +17,6 @@ if (releaseRequested && signingPropertiesFile == null) {
     throw new GradleException('Release signing is not configured. Run setup-release-signing.ps1 first.')
 }
 
-def releaseNumberFile = rootProject.file('release-build-number.properties')
-def releaseNumberProperties = new Properties()
-if (releaseNumberFile.exists()) {
-    releaseNumberFile.withInputStream { releaseNumberProperties.load(it) }
-}
-def releaseBuildNumber = Math.max(1, (releaseNumberProperties.getProperty('nextNumber', '1') as int))
 def decodeSigningSecret = { String encoded -> new String(Base64.decoder.decode(encoded), 'UTF-8') }
 
 android {
@@ -64,16 +58,9 @@ android {
 
 androidComponents {
     onVariants(selector().withBuildType('release')) { variant ->
+        // Follows versionName, so a new release no longer ships under the previous release's file name.
         variant.outputs.each { output ->
-            output.outputFileName.set("VoxTXT-beta2.apk")
+            output.outputFileName.set("VoxTXT-${android.defaultConfig.versionName}.apk")
         }
-    }
-}
-
-tasks.matching { it.name == 'assembleRelease' }.configureEach {
-    doLast {
-        def updated = new Properties()
-        updated.setProperty('nextNumber', String.valueOf(releaseBuildNumber + 1))
-        releaseNumberFile.withOutputStream { updated.store(it, 'Next local Vox TXT release APK number') }
     }
 }

@@ -33,7 +33,6 @@ public class ReaderService extends Service implements TextToSpeech.OnInitListene
     }
     public static class VoiceOption {
         public final String name, label, localeTag;
-        VoiceOption(String name, String label) { this(name, label, ""); }
         VoiceOption(String name, String label, String localeTag) { this.name = name; this.label = label; this.localeTag = localeTag == null ? "" : localeTag; }
     }
     public interface VoicesCallback { void onVoices(List<VoiceOption> voices); }
@@ -41,6 +40,8 @@ public class ReaderService extends Service implements TextToSpeech.OnInitListene
     private final IBinder binder = new ReaderBinder();
     private final Handler handler = new Handler(Looper.getMainLooper());
     private final Handler sleepHandler = new Handler(Looper.getMainLooper());
+    private final Handler focusHandler = new Handler(Looper.getMainLooper());
+    private final Handler lifecycleHandler = new Handler(Looper.getMainLooper());
     private final ArrayList<Range> sentences = new ArrayList<>();
     private TextToSpeech tts;
     private AudioTrack silentAudioTrack;
@@ -55,8 +56,10 @@ public class ReaderService extends Service implements TextToSpeech.OnInitListene
     private long sleepDeadline;
     private static final long SLEEP_FADE_DURATION_MS = 10_000L;
     private static final long SLEEP_FADE_UPDATE_MS = 100L;
-    private int volumeBeforeFade = -1;
+    private int volumeBeforeFade = -1, pendingVolumeRestore = -1;
     private int sleepStartSentence = -1, sleepFadeStartSentence = -1, completedSleepMinutes;
+    private boolean settingsDirty = true;
+    private String positionKeyUri = "", positionKey = "";
     private boolean sleepRewindAvailable, captureSleepStartOnPlay;
     private int transientRetries;
     private long utteranceSerial;
@@ -90,7 +93,7 @@ public class ReaderService extends Service implements TextToSpeech.OnInitListene
     };
 
     @Override public void onCreate() {
-        super.onCreate(); restoreSleepRewindState(); createChannel(); createMediaSession(); registerAudioRouteListeners(); initializeTts(getSharedPreferences("reader_settings", MODE_PRIVATE).getString("engine", ""));
+        super.onCreate(); restoreSleepRewindState(); createChannel(); createMediaSession(); restoreVolumeAfterCrash(); registerAudioRouteListeners(); initializeTts(getSharedPreferences("reader_settings", MODE_PRIVATE).getString("engine", ""));
     }
     @Override public IBinder onBind(Intent intent) { return binder; }
     @Override public int onStartCommand(Intent intent, int flags, int startId) {
@@ -102,12 +105,21 @@ public class ReaderService extends Service implements TextToSpeech.OnInitListene
                 case ACTION_NEXT: move(1); break;
                 case ACTION_STOP: pause(); stopForeground(true); stopSelf(); break;
                 case Intent.ACTION_MEDIA_BUTTON:
+                    // Started with startForegroundService(), so startForeground() must follow within a few
+                    // seconds even when the button turns out to be a no-op (no document, TTS not ready yet).
+                    startForeground(NOTIFICATION_ID, notification());
                     KeyEvent event = intent.getParcelableExtra(Intent.EXTRA_KEY_EVENT);
                     if (event != null && mediaSession != null) mediaSession.getController().dispatchMediaButtonEvent(event);
+                    lifecycleHandler.removeCallbacksAndMessages(null);
+                    lifecycleHandler.postDelayed(this::stopIfIdle, 2000L);
                     break;
             }
         }
         return START_NOT_STICKY;
+    }
+    private void stopIfIdle() {
+        if (playing || pendingPlay || !sentences.isEmpty()) return;
+        stopForeground(true); stopSelf();
     }
 
     public void setListener(Listener value) { listener = value; notifyState(); }
@@ -147,7 +159,7 @@ public class ReaderService extends Service implements TextToSpeech.OnInitListene
         if (!ready) { pendingPlay = true; return; }
         if (sentences.isEmpty()) return;
         if (captureSleepStartOnPlay) { sleepStartSentence = current; captureSleepStartOnPlay = false; }
-        applySettings(); transientRetries = 0; playing = true;
+        applySettingsIfNeeded(); transientRetries = 0; playing = true;
         if (!requestAudioFocus()) { playing = false; notifyState(); updateNotification(); return; }
         startSilentPlayback(); promoteMediaSession(); updateMediaSession(); startService(new Intent(this, ReaderService.class)); startForeground(NOTIFICATION_ID, notification());
         speakCurrent();
@@ -168,7 +180,7 @@ public class ReaderService extends Service implements TextToSpeech.OnInitListene
     }
     public void updateSettings(boolean playAfterUpdate) {
         String wantedEngine = getSharedPreferences("reader_settings", MODE_PRIVATE).getString("engine", "");
-        pause();
+        pause(); settingsDirty = true;
         if (!wantedEngine.equals(activeEngine)) { pendingPlay = playAfterUpdate; initializeTts(wantedEngine); }
         else { if (ready) applySettings(); if (playAfterUpdate) play(); }
     }
@@ -194,7 +206,7 @@ public class ReaderService extends Service implements TextToSpeech.OnInitListene
     }
     private void speakCurrent() {
         if (!playing || current >= sentences.size()) { pause(); return; }
-        applySettings(); Range range = sentences.get(current);
+        applySettingsIfNeeded(); Range range = sentences.get(current);
         activeUtterance = "sentence-" + current + "-" + (++utteranceSerial); String utterance = activeUtterance;
         Bundle parameters = new Bundle(); parameters.putFloat(TextToSpeech.Engine.KEY_PARAM_VOLUME, getSharedPreferences("reader_settings", MODE_PRIVATE).getInt("volume_percent", 50) / 100f);
         int result = tts.speak(text.substring(range.start, range.end).trim(), TextToSpeech.QUEUE_FLUSH, parameters, utterance);
@@ -227,7 +239,11 @@ public class ReaderService extends Service implements TextToSpeech.OnInitListene
         try { track.pause(); track.setPlaybackHeadPosition(0); track.play(); promoteMediaSession(); updateMediaSession(); }
         catch (IllegalStateException ignored) { stopSilentPlayback(); startSilentPlayback(); promoteMediaSession(); updateMediaSession(); }
     }
+    // Rate, pitch and voice stay on the TextToSpeech instance until they are changed, so re-reading the
+    // preferences and scanning the whole voice list before every single sentence is wasted work.
+    private void applySettingsIfNeeded() { if (settingsDirty) applySettings(); }
     private void applySettings() {
+        settingsDirty = false;
         android.content.SharedPreferences p = getSharedPreferences("reader_settings", MODE_PRIVATE);
         tts.setSpeechRate(speechRate(p.getInt("rate_percent", 20))); tts.setPitch(speechPitch(p.getInt("pitch_percent", 20)));
         String selectedVoice = p.getString(voicePreferenceKey(activeEngine), "");
@@ -258,7 +274,7 @@ public class ReaderService extends Service implements TextToSpeech.OnInitListene
     }
 
     private void initializeTts(String engine) {
-        ready = false; if (tts != null) { tts.stop(); tts.shutdown(); }
+        ready = false; settingsDirty = true; if (tts != null) { tts.stop(); tts.shutdown(); }
         activeEngine = engine == null ? "" : engine;
         tts = activeEngine.isEmpty() ? new TextToSpeech(this, this) : new TextToSpeech(this, this, activeEngine);
     }
@@ -273,7 +289,7 @@ public class ReaderService extends Service implements TextToSpeech.OnInitListene
 
     @Override public void onInit(int status) {
         ready = status == TextToSpeech.SUCCESS;
-        if (!ready) { error(getString(R.string.tts_unavailable)); notifyState(); return; }
+        if (!ready) { pendingPlay = false; error(getString(R.string.tts_unavailable)); notifyState(); stopIfIdle(); return; }
         applySettings(); refreshEngines();
         tts.setAudioAttributes(new AudioAttributes.Builder().setUsage(AudioAttributes.USAGE_MEDIA).setContentType(AudioAttributes.CONTENT_TYPE_SPEECH).build());
         tts.setOnUtteranceProgressListener(new UtteranceProgressListener() {
@@ -290,7 +306,12 @@ public class ReaderService extends Service implements TextToSpeech.OnInitListene
         getSharedPreferences("book_positions", MODE_PRIVATE).edit().putInt(key(uri), current).apply();
     }
     public int savedPosition(String value) { return getSharedPreferences("book_positions", MODE_PRIVATE).getInt(key(value), 0); }
+    // savePosition() runs once per sentence, so the hash of the (unchanged) document uri is worth keeping.
     private String key(String value) {
+        if (value.equals(positionKeyUri)) return positionKey;
+        positionKeyUri = value; positionKey = hash(value); return positionKey;
+    }
+    private String hash(String value) {
         try { byte[] b = MessageDigest.getInstance("SHA-256").digest(value.getBytes(StandardCharsets.UTF_8)); StringBuilder s = new StringBuilder(); for (byte x : b) s.append(String.format(Locale.ROOT, "%02x", x)); return s.toString(); }
         catch (Exception e) { return Integer.toHexString(value.hashCode()); }
     }
@@ -350,7 +371,7 @@ public class ReaderService extends Service implements TextToSpeech.OnInitListene
         if (hasAudioFocus) return true;
         AudioAttributes attributes = new AudioAttributes.Builder().setUsage(AudioAttributes.USAGE_MEDIA).setContentType(AudioAttributes.CONTENT_TYPE_SPEECH).build();
         if (audioFocusRequest == null) audioFocusRequest = new AudioFocusRequest.Builder(AudioManager.AUDIOFOCUS_GAIN)
-            .setAudioAttributes(attributes).setOnAudioFocusChangeListener(focusListener, handler).setWillPauseWhenDucked(false).build();
+            .setAudioAttributes(attributes).setOnAudioFocusChangeListener(focusListener, focusHandler).setWillPauseWhenDucked(false).build();
         int result = audioManager.requestAudioFocus(audioFocusRequest);
         hasAudioFocus = result == AudioManager.AUDIOFOCUS_REQUEST_GRANTED;
         return hasAudioFocus;
@@ -364,16 +385,23 @@ public class ReaderService extends Service implements TextToSpeech.OnInitListene
         if (sleepDeadline <= 0) return;
         if (!playing) { sleepHandler.postDelayed(this::finishSleepTimer, Math.max(0, sleepDeadline - SystemClock.elapsedRealtime())); return; }
         sleepFadeStartSentence = Math.max(0, current - 1);
-        volumeBeforeFade = audioManager.getStreamVolume(AudioManager.STREAM_MUSIC); fadeSleepStep();
+        volumeBeforeFade = audioManager.getStreamVolume(AudioManager.STREAM_MUSIC); rememberFadeVolume(volumeBeforeFade); fadeSleepStep();
     }
     private void fadeSleepStep() {
         long remaining = sleepDeadline - SystemClock.elapsedRealtime();
-        if (remaining <= 0) { audioManager.setStreamVolume(AudioManager.STREAM_MUSIC, 0, 0); finishSleepTimer(); return; }
+        if (remaining <= 0) { setMusicVolume(0); finishSleepTimer(); return; }
         if (!playing || volumeBeforeFade < 0) { sleepHandler.postDelayed(this::finishSleepTimer, remaining); return; }
         double progress = 1.0 - Math.min(SLEEP_FADE_DURATION_MS, remaining) / (double)SLEEP_FADE_DURATION_MS;
         int faded = Math.max(0, (int)Math.round(volumeBeforeFade * (1.0 - progress)));
-        audioManager.setStreamVolume(AudioManager.STREAM_MUSIC, faded, 0);
+        if (!setMusicVolume(faded)) { finishSleepTimer(); return; }
         sleepHandler.postDelayed(this::fadeSleepStep, Math.min(SLEEP_FADE_UPDATE_MS, remaining));
+    }
+    // Do Not Disturb can forbid volume changes; in that case give the stream back to the user and let the
+    // timer stop playback without a fade rather than crashing halfway through it.
+    private boolean setMusicVolume(int value) {
+        if (audioManager == null) return false;
+        try { audioManager.setStreamVolume(AudioManager.STREAM_MUSIC, value, 0); return true; }
+        catch (SecurityException denied) { volumeBeforeFade = -1; forgetFadeVolume(); return false; }
     }
     private void finishSleepTimer() {
         sleepHandler.removeCallbacksAndMessages(null);
@@ -387,9 +415,27 @@ public class ReaderService extends Service implements TextToSpeech.OnInitListene
         sleepRewindAvailable = sleepStartSentence >= 0 && completedSleepMinutes > 0;
         persistSleepRewindState();
         notifyState();
-        if (restoreVolume >= 0 && audioManager != null) sleepHandler.postDelayed(() -> audioManager.setStreamVolume(AudioManager.STREAM_MUSIC, restoreVolume, 0), 250L);
+        // Short technical pause so the tail of the interrupted sentence is not heard again at full volume.
+        if (restoreVolume >= 0) { pendingVolumeRestore = restoreVolume; sleepHandler.postDelayed(this::flushVolumeRestore, 250L); }
     }
-    private void restoreVolumeAfterFade() { if (volumeBeforeFade >= 0 && audioManager != null) { audioManager.setStreamVolume(AudioManager.STREAM_MUSIC, volumeBeforeFade, 0); volumeBeforeFade = -1; } }
+    private void restoreVolumeAfterFade() {
+        flushVolumeRestore();
+        if (volumeBeforeFade >= 0) { setMusicVolume(volumeBeforeFade); volumeBeforeFade = -1; forgetFadeVolume(); }
+    }
+    // The delayed restore lives on sleepHandler, which any new timer clears - never leave the device muted.
+    private void flushVolumeRestore() {
+        if (pendingVolumeRestore < 0) return;
+        int value = pendingVolumeRestore; pendingVolumeRestore = -1; setMusicVolume(value); forgetFadeVolume();
+    }
+    private void rememberFadeVolume(int value) { getSharedPreferences(SLEEP_STATE, MODE_PRIVATE).edit().putInt("fade_volume", value).apply(); }
+    private void forgetFadeVolume() { getSharedPreferences(SLEEP_STATE, MODE_PRIVATE).edit().remove("fade_volume").apply(); }
+    // If the process was killed mid fade-out the device is left quiet; put the volume back on next start.
+    private void restoreVolumeAfterCrash() {
+        int stored = getSharedPreferences(SLEEP_STATE, MODE_PRIVATE).getInt("fade_volume", -1);
+        if (stored < 0) return;
+        forgetFadeVolume();
+        if (audioManager != null && audioManager.getStreamVolume(AudioManager.STREAM_MUSIC) < stored) setMusicVolume(stored);
+    }
     private void persistSleepRewindState() {
         if (!sleepRewindAvailable) { getSharedPreferences(SLEEP_STATE, MODE_PRIVATE).edit().clear().apply(); return; }
         getSharedPreferences(SLEEP_STATE, MODE_PRIVATE).edit().putBoolean("available", true).putString("uri", uri).putInt("sentence", sleepStartSentence).putInt("minutes", completedSleepMinutes).apply();
@@ -433,7 +479,7 @@ public class ReaderService extends Service implements TextToSpeech.OnInitListene
     private Notification notification() {
         Intent open = new Intent(this, MainActivity.class).addFlags(Intent.FLAG_ACTIVITY_SINGLE_TOP);
         PendingIntent content = PendingIntent.getActivity(this, 0, open, PendingIntent.FLAG_UPDATE_CURRENT | PendingIntent.FLAG_IMMUTABLE);
-        String line = getString(playing ? R.string.notification_text : R.string.notification_paused, current + 1, sentences.size());
+        String line = sentences.isEmpty() ? "" : getString(playing ? R.string.notification_text : R.string.notification_paused, current + 1, sentences.size());
         Notification.Builder b = new Notification.Builder(this, CHANNEL);
         b.setSmallIcon(R.drawable.ic_launcher).setContentTitle(title).setContentText(line).setContentIntent(content).setOngoing(playing).setOnlyAlertOnce(true)
             .addAction(android.R.drawable.ic_media_previous, getString(R.string.previous), command(ACTION_PREVIOUS, 1))
@@ -443,7 +489,7 @@ public class ReaderService extends Service implements TextToSpeech.OnInitListene
         return b.build();
     }
     private void updateNotification() { if (!sentences.isEmpty()) ((NotificationManager)getSystemService(NOTIFICATION_SERVICE)).notify(NOTIFICATION_ID, notification()); }
-    @Override public void onDestroy() { sleepHandler.removeCallbacksAndMessages(null); pause(); stopSilentPlayback(); if (audioManager != null) audioManager.unregisterAudioDeviceCallback(audioDeviceCallback); try { unregisterReceiver(becomingNoisyReceiver); } catch (IllegalArgumentException ignored) {} if (mediaSession != null) mediaSession.release(); if (tts != null) tts.shutdown(); super.onDestroy(); }
+    @Override public void onDestroy() { sleepHandler.removeCallbacksAndMessages(null); lifecycleHandler.removeCallbacksAndMessages(null); pause(); flushVolumeRestore(); stopSilentPlayback(); if (audioManager != null) audioManager.unregisterAudioDeviceCallback(audioDeviceCallback); try { unregisterReceiver(becomingNoisyReceiver); } catch (IllegalArgumentException ignored) {} if (mediaSession != null) mediaSession.release(); if (tts != null) tts.shutdown(); super.onDestroy(); }
 
     public static class Range { public final int start, end; Range(int start, int end) { this.start = start; this.end = end; } }
 }
