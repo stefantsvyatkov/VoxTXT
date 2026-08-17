@@ -512,11 +512,15 @@ public class MainActivity extends Activity implements ReaderService.Listener {
         scheduleAutomaticPlayback();
     }
     // A row of a list carries a whole sentence or a whole file name, so it wraps over as many lines as it
-    // needs and the row grows with it. A fixed height left the text hanging outside the button: the standard
-    // background is drawn a little inside the edges of the view, so without this padding the last line ended
-    // up beyond it instead of inside one clean rectangle.
+    // needs and the row grows with it. It is an entry in a list and not a button to press, so it carries no
+    // grey slab behind its text - only the standard touch highlight, which appears while the finger is down
+    // and leaves nothing behind it. It stays a button underneath, so a screen reader still announces it as
+    // something that can be opened.
     private Button listRowButton(String name, int textSize) {
         Button row = compactButton(name); row.setGravity(Gravity.START | Gravity.CENTER_VERTICAL); row.setTextSize(uiSize(textSize)); row.setContentDescription(name);
+        android.util.TypedValue highlight = new android.util.TypedValue(); getTheme().resolveAttribute(android.R.attr.selectableItemBackground, highlight, true);
+        row.setBackgroundResource(highlight.resourceId);
+        // After the background, because a new one brings its own padding along and would undo this.
         row.setPadding(dp(16), dp(14), dp(16), dp(14)); row.setMinimumHeight(dp(64));
         return row;
     }
