@@ -14,7 +14,8 @@ Requires Android 8.0 (API 26) or later.
 
 1. Clearing the app from Recents, Close all included, now closes it for good. The reading stops, the notification disappears and nothing is left running, whether or not a book was being read at that moment. The position is saved on the way out.
 
-2. Entries in Recent files and in Bookmarks are plain text rows now, without the grey slab of a button behind them. They still highlight while the finger is on them and are still announced as something that can be opened.
+2. Removing a book from Recent files now forgets it entirely: the row, the place it was left at, its bookmarks and the permission to open the file. The file itself is untouched. A book removed and opened again starts from the beginning instead of coming back at the percentage it was left at.
+3. Entries in Recent files and in Bookmarks are plain text rows now, without the grey slab of a button behind them. They still highlight while the finger is on them and are still announced as something that can be opened.
 
 ### Fixed
 

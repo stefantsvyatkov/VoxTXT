@@ -778,9 +778,26 @@ public class MainActivity extends Activity implements ReaderService.Listener {
         if (applyAction != null) { Button apply = button(getString(R.string.apply)); apply.setOnClickListener(v -> applyAction.run()); page.addView(apply, new LinearLayout.LayoutParams(-1, dp(58))); }
         appRoot = page; setContentView(page); page.requestApplyInsets(); focusHeading(heading);
     }
+    // "Remove the book" is taken at its word: the row goes, and with it everything the app knew about that
+    // book - the place it was left at, its bookmarks and the permission to open the file at all. Otherwise a
+    // book removed and opened again would come back at the percentage it was left at, which is the opposite
+    // of what removing it looked like. If it is the book currently open, it is closed as well; leaving it
+    // loaded would only write its position back on the next sentence.
     private void removeRecent(String itemUri) {
-        try { JSONArray old = new JSONArray(documents().getString("recent", "[]")), fresh = new JSONArray(); for (int i = 0; i < old.length(); i++) if (!itemUri.equals(old.getJSONObject(i).optString("uri"))) fresh.put(old.getJSONObject(i)); documents().edit().putString("recent", fresh.toString()).apply(); showRecent(); }
-        catch (JSONException e) { toast(getString(R.string.no_recent)); }
+        try { JSONArray old = new JSONArray(documents().getString("recent", "[]")), fresh = new JSONArray(); for (int i = 0; i < old.length(); i++) if (!itemUri.equals(old.getJSONObject(i).optString("uri"))) fresh.put(old.getJSONObject(i)); documents().edit().putString("recent", fresh.toString()).apply(); }
+        catch (JSONException e) { toast(getString(R.string.no_recent)); return; }
+        forgetBook(itemUri);
+        showRecent();
+    }
+    private void forgetBook(String itemUri) {
+        if (itemUri.equals(currentUri)) clearCurrentDocument();
+        if (itemUri.equals(documents().getString("last_uri", ""))) documents().edit().remove("last_uri").apply();
+        if (reader != null) reader.forgetBook(itemUri);
+        try { JSONObject all = new JSONObject(documents().getString("bookmarks", "{}")); all.remove(itemUri); documents().edit().putString("bookmarks", all.toString()).apply(); }
+        catch (JSONException ignored) {}
+        // Held since the file was opened. Android keeps a limited number of them per app, so one that is no
+        // longer of use is given back rather than left to pile up.
+        try { getContentResolver().releasePersistableUriPermission(Uri.parse(itemUri), Intent.FLAG_GRANT_READ_URI_PERMISSION); } catch (Exception ignored) {}
     }
     // Opening a book from the recent list must not go through closeRecent(): that one marks the activity as
     // loading before the tap is handled, which used to swallow the requested file and keep the current one.

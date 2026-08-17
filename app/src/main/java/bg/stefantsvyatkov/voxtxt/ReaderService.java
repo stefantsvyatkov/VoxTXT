@@ -576,6 +576,13 @@ public class ReaderService extends Service implements TextToSpeech.OnInitListene
         getSharedPreferences("book_positions", MODE_PRIVATE).edit().putInt(key(uri), current).apply();
     }
     public int savedPosition(String value) { return getSharedPreferences("book_positions", MODE_PRIVATE).getInt(key(value), 0); }
+    // Removing a book from Recent files means forgetting it, so the place it was left at goes with it, and so
+    // does a sleep timer waiting to return into that very book.
+    public void forgetBook(String value) {
+        if (value == null || value.isEmpty()) return;
+        getSharedPreferences("book_positions", MODE_PRIVATE).edit().remove(key(value)).apply();
+        if (value.equals(getSharedPreferences(SLEEP_STATE, MODE_PRIVATE).getString("uri", ""))) { clearSleepRewindState(); notifyState(); }
+    }
     // savePosition() runs once per sentence, so the hash of the (unchanged) document uri is worth keeping.
     private String key(String value) {
         if (value.equals(positionKeyUri)) return positionKey;
