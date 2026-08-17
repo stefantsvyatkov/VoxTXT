@@ -166,6 +166,7 @@ public class ReaderService extends Service implements TextToSpeech.OnInitListene
     public boolean isReady() { return ready; }
     public MediaController getMediaController() { return mediaSession == null ? null : mediaSession.getController(); }
     public boolean isSleepRewindAvailable() { return sleepRewindAvailable; }
+    public long sleepRemainingMillis() { return sleepDeadline <= 0 ? 0 : Math.max(0, sleepDeadline - SystemClock.elapsedRealtime()); }
     public int getCompletedSleepMinutes() { return completedSleepMinutes; }
     public synchronized List<EngineOption> getEngineOptions() { return new ArrayList<>(allEngines); }
     public void loadVoiceOptions(String engine, VoicesCallback callback) {

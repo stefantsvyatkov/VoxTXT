@@ -71,8 +71,8 @@
     <string name="open_sleep_timer">Таймер за заспиване</string>
     <string name="sleep_timer">Таймер за заспиване</string>
     <plurals name="rewind_sleep_minutes"><item quantity="one">Връщане с %1$d минута</item><item quantity="other">Връщане с %1$d минути</item></plurals>
+    <plurals name="cancel_sleep_timer"><item quantity="one">Отмени таймера, остава %1$d минута</item><item quantity="other">Отмени таймера, остават %1$d минути</item></plurals>
     <string name="custom_timer">Персонализиран</string>
-    <string name="off">Изключен</string>
     <plurals name="minutes"><item quantity="one">%1$d минута</item><item quantity="other">%1$d минути</item></plurals>
     <string name="apply">Приложи</string>
     <string name="cancel">Отказ</string>

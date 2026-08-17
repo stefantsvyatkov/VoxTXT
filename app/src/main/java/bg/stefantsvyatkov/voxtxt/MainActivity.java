@@ -47,6 +47,7 @@ public class MainActivity extends Activity implements ReaderService.Listener {
     private final Handler seekHandler = new Handler(Looper.getMainLooper());
     private final Handler automaticResumeHandler = new Handler(Looper.getMainLooper());
     private final Handler previewHandler = new Handler(Looper.getMainLooper());
+    private final Handler sleepRowHandler = new Handler(Looper.getMainLooper());
     private boolean fastSeeking, resumeAfterFastSeek;
     private boolean pausedAutomaticallyOutsideReader, automaticResumePending, resumeAfterRecreate, resumeAfterFilePickerLoad;
     private boolean showingRecent;
@@ -178,7 +179,13 @@ public class MainActivity extends Activity implements ReaderService.Listener {
         LinearLayout playerButtons = new LinearLayout(this); playerButtons.setGravity(Gravity.CENTER);
         voiceButton = imageButton(R.drawable.ic_voice, R.string.choose_voice); previous = imageButton(R.drawable.ic_previous, R.string.previous_sentence); play = imageButton(R.drawable.ic_play, R.string.play_sentence); next = imageButton(R.drawable.ic_next, R.string.next_sentence); sleepButton = imageButton(R.drawable.ic_sleep, R.string.open_sleep_timer); sleepRewindButton = button("");
         voiceButton.setOnClickListener(v -> showVoiceSettings()); sleepButton.setOnClickListener(v -> showSleepDialog());
-        sleepRewindButton.setOnClickListener(v -> { if (reader != null) reader.rewindCompletedSleepTimer(); }); sleepRewindButton.setVisibility(View.INVISIBLE);
+        sleepRewindButton.setOnClickListener(v -> {
+            if (reader == null) return;
+            // Only the timer is called off. A book that is reading carries on reading; the timer was the thing
+            // that was no longer wanted, not the book.
+            if (reader.sleepRemainingMillis() > 0) { getSettings().edit().putInt("sleep_choice", 0).apply(); reader.setSleepMinutes(0); updateSleepRow(); }
+            else reader.rewindCompletedSleepTimer();
+        }); sleepRewindButton.setVisibility(View.INVISIBLE);
         playerPanel.addView(bookProgress, new LinearLayout.LayoutParams(-1, dp(52)));
         attachSeekButton(previous, -1);
         play.setOnClickListener(v -> { if (reader == null) return; cancelAutomaticResume(true); if (reader.isPlaying()) reader.pause(); else reader.play(); });
@@ -322,7 +329,33 @@ public class MainActivity extends Activity implements ReaderService.Listener {
     }
     private String withoutTxtExtension(String value) { return value != null && value.toLowerCase(Locale.ROOT).endsWith(".txt") ? value.substring(0, value.length() - 4) : value; }
 
-    @Override public void onPlaybackState(int index, int count, boolean playing) { runOnUiThread(() -> { if (playing && (pausedAutomaticallyOutsideReader || automaticResumePending)) cancelAutomaticResume(true); showCurrent(index, count); play.setImageResource(playing ? R.drawable.ic_pause : R.drawable.ic_play); play.setContentDescription(getString(playing ? R.string.pause_sentence : R.string.play_sentence)); if (reader != null && reader.isSleepRewindAvailable()) { int minutes = reader.getCompletedSleepMinutes(); sleepRewindButton.setText(getResources().getQuantityString(R.plurals.rewind_sleep_minutes, minutes, minutes)); sleepRewindButton.setVisibility(View.VISIBLE); } else { sleepRewindButton.setText(""); sleepRewindButton.setVisibility(View.INVISIBLE); } updateControls(); }); }
+    @Override public void onPlaybackState(int index, int count, boolean playing) { runOnUiThread(() -> { if (playing && (pausedAutomaticallyOutsideReader || automaticResumePending)) cancelAutomaticResume(true); showCurrent(index, count); play.setImageResource(playing ? R.drawable.ic_pause : R.drawable.ic_play); play.setContentDescription(getString(playing ? R.string.pause_sentence : R.string.play_sentence)); updateSleepRow(); updateControls(); }); }
+    // The row under the player has one place and three states: a running timer offers to be called off, an
+    // expired one offers to go back to where it started, and the rest of the time it is empty but keeps its
+    // height, so nothing on the screen moves. The two offers never arrive together - starting a timer clears
+    // the return, and the return only appears once a timer has run out.
+    private void updateSleepRow() {
+        sleepRowHandler.removeCallbacksAndMessages(null);
+        long remaining = reader == null ? 0 : reader.sleepRemainingMillis();
+        if (remaining > 0) {
+            // Rounded up, so a timer just set for thirty says thirty, and the last seconds say one minute
+            // rather than none.
+            int minutes = (int)((remaining + 59_999L) / 60_000L);
+            sleepRewindButton.setText(getResources().getQuantityString(R.plurals.cancel_sleep_timer, minutes, minutes));
+            sleepRewindButton.setVisibility(View.VISIBLE);
+            // Woken exactly when the minute shown changes, instead of a tick running the whole time. The text
+            // is not a live region, so a screen reader reads it when it is reached and not on every change.
+            sleepRowHandler.postDelayed(this::updateSleepRow, remaining - (minutes - 1) * 60_000L + 200L);
+            return;
+        }
+        if (reader != null && reader.isSleepRewindAvailable()) {
+            int minutes = reader.getCompletedSleepMinutes();
+            sleepRewindButton.setText(getResources().getQuantityString(R.plurals.rewind_sleep_minutes, minutes, minutes));
+            sleepRewindButton.setVisibility(View.VISIBLE);
+            return;
+        }
+        sleepRewindButton.setText(""); sleepRewindButton.setVisibility(View.INVISIBLE);
+    }
     @Override public void onPlaybackError(String message) { runOnUiThread(() -> toast(message)); }
     private void showCurrent(int index, int count) {
         if (reader == null || reader.getText().isEmpty()) return;
@@ -652,18 +685,43 @@ public class MainActivity extends Activity implements ReaderService.Listener {
 
     private void showSleepDialog() {
         if (reader == null) return; pausePlaybackOutsideReader(); android.content.SharedPreferences p = getSettings();
-        LinearLayout box = new LinearLayout(this); box.setOrientation(LinearLayout.VERTICAL); box.setPadding(dp(20), dp(8), dp(20), dp(8)); int[] minutes = {0, 15, 30, 45, 60, 90};
-        RadioGroup choices = new RadioGroup(this); choices.setOrientation(RadioGroup.VERTICAL); int savedChoice = p.getInt("sleep_choice", 0); int checkedId = -1;
-        for (int m : minutes) { RadioButton option = new RadioButton(this); option.setId(View.generateViewId()); option.setTag(m); option.setText(m == 0 ? getString(R.string.off) : getResources().getQuantityString(R.plurals.minutes, m, m)); option.setTextSize(uiSize(18)); choices.addView(option, new RadioGroup.LayoutParams(-1, dp(48))); if (savedChoice == m) checkedId = option.getId(); }
-        RadioButton customChoice = new RadioButton(this); customChoice.setId(View.generateViewId()); customChoice.setTag(-1); customChoice.setText(R.string.custom_timer); customChoice.setTextSize(uiSize(18)); choices.addView(customChoice, new RadioGroup.LayoutParams(-1, dp(48))); if (savedChoice == -1) checkedId = customChoice.getId(); choices.check(checkedId == -1 ? choices.getChildAt(0).getId() : checkedId); box.addView(choices);
+        LinearLayout box = new LinearLayout(this); box.setOrientation(LinearLayout.VERTICAL); box.setPadding(dp(20), dp(8), dp(20), dp(8)); int[] minutes = {15, 30, 45, 60, 90};
+        // A menu and not a set of radio buttons: each row is a thing that happens the moment it is touched,
+        // and there is nothing to mark as chosen, because a running timer is shown by its own button under
+        // the player. Off is gone from here for the same reason - that button is where a timer is called off.
+        LinearLayout choices = new LinearLayout(this); choices.setOrientation(LinearLayout.VERTICAL); int savedChoice = p.getInt("sleep_choice", 0);
+        for (int m : minutes) { Button option = listRowButton(getResources().getQuantityString(R.plurals.minutes, m, m), 18); option.setTag(m); choices.addView(option, new LinearLayout.LayoutParams(-1, -2)); }
+        Button customChoice = listRowButton(getString(R.string.custom_timer), 18); customChoice.setTag(-1); choices.addView(customChoice, new LinearLayout.LayoutParams(-1, -2)); box.addView(choices);
         LinearLayout customHeader = new LinearLayout(this); customHeader.setGravity(Gravity.CENTER_VERTICAL); TextView customLabel = label(getString(R.string.custom_timer), 18, true); TextView customValue = valueLabel(); customHeader.addView(customLabel, new LinearLayout.LayoutParams(0, -2, 1)); customHeader.addView(customValue, new LinearLayout.LayoutParams(-2, -2)); MinuteSeekBar custom = new MinuteSeekBar(this); custom.setProgress(Math.max(0, Math.min(89, p.getInt("custom_sleep_minutes", 30) - 1)));
         SeekBar.OnSeekBarChangeListener customListener = new SeekBar.OnSeekBarChangeListener() { public void onStartTrackingTouch(SeekBar s) {} public void onStopTrackingTouch(SeekBar s) {} public void onProgressChanged(SeekBar s, int progress, boolean fromUser) { int value = progress + 1; String spoken = getResources().getQuantityString(R.plurals.minutes, value, value); customValue.setText(getString(R.string.minutes_short_value, value)); setSliderValueDescription(custom, spoken); } }; custom.setOnSeekBarChangeListener(customListener); customListener.onProgressChanged(custom, custom.getProgress(), false);
         box.addView(customHeader); box.addView(custom, new LinearLayout.LayoutParams(-1, dp(56))); boolean showCustom = savedChoice == -1; customHeader.setVisibility(showCustom ? View.VISIBLE : View.GONE); custom.setVisibility(showCustom ? View.VISIBLE : View.GONE);
-        choices.setOnCheckedChangeListener((group, id) -> { RadioButton selected = group.findViewById(id); boolean show = selected != null && (Integer)selected.getTag() == -1; customHeader.setVisibility(show ? View.VISIBLE : View.GONE); custom.setVisibility(show ? View.VISIBLE : View.GONE); if (show) custom.post(() -> { custom.requestFocus(); custom.performAccessibilityAction(android.view.accessibility.AccessibilityNodeInfo.ACTION_ACCESSIBILITY_FOCUS, null); }); });
         ScrollView timerScroll = new ScrollView(this); timerScroll.addView(box);
         final boolean[] applied = {false};
-        AlertDialog dialog = new AlertDialog.Builder(this).setTitle(R.string.sleep_timer).setView(timerScroll).setNegativeButton(R.string.cancel, null).setPositiveButton(R.string.apply, (d, w) -> { RadioButton selected = choices.findViewById(choices.getCheckedRadioButtonId()); int choice = selected == null ? 0 : (Integer)selected.getTag(); int customMinutes = custom.getProgress() + 1; int chosen = choice == -1 ? customMinutes : choice; p.edit().putInt("custom_sleep_minutes", customMinutes).putInt("sleep_choice", choice).apply(); applied[0] = true; reader.setSleepMinutes(chosen); if (chosen > 0 && !reader.isPlaying()) { pausedAutomaticallyOutsideReader = false; scheduleAutomaticPlayback(); } }).create();
-        dialog.setOnDismissListener(d -> { if (!applied[0] || p.getInt("sleep_choice", 0) == 0) returnToReader(); }); dialog.show(); focusDialogTitle(dialog);
+        AlertDialog dialog = new AlertDialog.Builder(this).setTitle(R.string.sleep_timer).setView(timerScroll).setNegativeButton(R.string.close, null).setPositiveButton(R.string.apply, null).create();
+        dialog.setOnDismissListener(d -> { if (!applied[0]) returnToReader(); }); dialog.show();
+        // A ready-made value is the whole decision by itself: one tap starts the timer and the dialog closes.
+        // Only the custom one is still being set while it is being touched, so it alone keeps Apply, and Apply
+        // is shown only while it is chosen. The number stands above the slider, so there is no reason to
+        // repeat it on the button.
+        Button apply = dialog.getButton(AlertDialog.BUTTON_POSITIVE);
+        apply.setVisibility(showCustom ? View.VISIBLE : View.GONE);
+        apply.setOnClickListener(v -> { applySleepChoice(p, applied, -1, custom.getProgress() + 1); dialog.dismiss(); });
+        for (int i = 0; i < choices.getChildCount(); i++) {
+            View option = choices.getChildAt(i); int value = (Integer)option.getTag();
+            if (value == -1) option.setOnClickListener(v -> {
+                customHeader.setVisibility(View.VISIBLE); custom.setVisibility(View.VISIBLE); apply.setVisibility(View.VISIBLE);
+                custom.post(() -> { custom.requestFocus(); custom.performAccessibilityAction(android.view.accessibility.AccessibilityNodeInfo.ACTION_ACCESSIBILITY_FOCUS, null); });
+            });
+            else option.setOnClickListener(v -> { applySleepChoice(p, applied, value, custom.getProgress() + 1); dialog.dismiss(); });
+        }
+        focusDialogTitle(dialog);
+    }
+    private void applySleepChoice(android.content.SharedPreferences p, boolean[] applied, int choice, int customMinutes) {
+        if (reader == null) return;
+        p.edit().putInt("custom_sleep_minutes", customMinutes).putInt("sleep_choice", choice).apply();
+        int chosen = choice == -1 ? customMinutes : choice;
+        applied[0] = true; reader.setSleepMinutes(chosen); updateSleepRow();
+        if (chosen > 0 && !reader.isPlaying()) { pausedAutomaticallyOutsideReader = false; scheduleAutomaticPlayback(); }
     }
     private SeekBar seek(LinearLayout box, int label, int min, int max, int value) {
         TextView valueLabel = addSliderHeader(box, label, 18, dp(12)); SeekBar s = new SeekBar(this); s.setTag(new SeekRange(min, max)); s.setMax(20); s.setProgress(Math.round((value - min) * 20f / (max - min))); sliderValues.put(s, valueLabel); updateSliderPercentValue(s); s.setOnSeekBarChangeListener(new SeekBar.OnSeekBarChangeListener() { public void onStartTrackingTouch(SeekBar seekBar) {} public void onStopTrackingTouch(SeekBar seekBar) {} public void onProgressChanged(SeekBar seekBar, int progress, boolean fromUser) { updateSliderPercentValue(seekBar); } }); box.addView(s); return s;
@@ -874,7 +932,7 @@ public class MainActivity extends Activity implements ReaderService.Listener {
     @Override protected void onSaveInstanceState(Bundle outState) { outState.putBoolean(STATE_RESUME_AFTER_RECREATE, resumeAfterRecreate); super.onSaveInstanceState(outState); }
     private void toast(String value) { Toast.makeText(this, value == null ? getString(R.string.open_failed) : value, Toast.LENGTH_LONG).show(); }
     @Override protected void onDestroy() {
-        destroyed = true; automaticResumeHandler.removeCallbacksAndMessages(null); seekHandler.removeCallbacksAndMessages(null); previewHandler.removeCallbacksAndMessages(null);
+        destroyed = true; automaticResumeHandler.removeCallbacksAndMessages(null); seekHandler.removeCallbacksAndMessages(null); previewHandler.removeCallbacksAndMessages(null); sleepRowHandler.removeCallbacksAndMessages(null);
         if (reader != null) reader.setListener(null);
         if (bindRequested) { bindRequested = false; try { unbindService(connection); } catch (IllegalArgumentException ignored) {} }
         io.shutdownNow(); super.onDestroy();
