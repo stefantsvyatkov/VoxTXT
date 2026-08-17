@@ -53,6 +53,7 @@ public class MainActivity extends Activity implements ReaderService.Listener {
     private String renderedText;
     private BackgroundColorSpan highlightSpan;
     private Runnable subpageCloseAction, previewAction;
+    private String lastSearch = "";
     private Button previewButton;
     private boolean previewSpeaking;
     private boolean updatingBookProgress, resumeAfterProgressSeek, draggingBookProgress;
@@ -150,7 +151,7 @@ public class MainActivity extends Activity implements ReaderService.Listener {
         Button open = button("＋  " + getString(R.string.open_txt)); open.setTextSize(uiSize(19)); open.setOnClickListener(v -> chooseFile()); root.addView(open, new LinearLayout.LayoutParams(-1, dp(60)));
         LinearLayout header = new LinearLayout(this); header.setGravity(Gravity.CENTER_VERTICAL);
         Button recent = compactButton("☰ " + getString(R.string.recent)); recent.setOnClickListener(v -> showRecent());
-        Button settings = compactButton("⚙  " + getString(R.string.settings)); settings.setContentDescription(getString(R.string.settings)); settings.setOnClickListener(v -> showSettings());
+        Button settings = compactButton("⚙  " + getString(R.string.more)); settings.setContentDescription(getString(R.string.more)); settings.setOnClickListener(v -> showMoreMenu());
         recent.setTextSize(uiSize(17)); settings.setTextSize(uiSize(17)); header.addView(recent, new LinearLayout.LayoutParams(0, dp(52), 1)); header.addView(settings, new LinearLayout.LayoutParams(0, dp(52), 1));
         root.addView(header);
         LinearLayout sentenceRow = new LinearLayout(this); sentenceRow.setGravity(Gravity.CENTER_VERTICAL);
@@ -412,6 +413,151 @@ public class MainActivity extends Activity implements ReaderService.Listener {
         }).create(); dialog.setOnDismissListener(d -> { if (!applied[0]) returnToReader(); }); dialog.show(); focusHeading(heading);
     }
 
+    // One entry point for everything that is not the reading itself. A plain list is used rather than a
+    // floating menu: it is themed like the rest of the app and a screen reader walks it top to bottom.
+    private void showMoreMenu() {
+        pausePlaybackOutsideReader();
+        String[] items = {getString(R.string.bookmarks), getString(R.string.search), getString(R.string.settings)};
+        final boolean[] chosen = {false};
+        AlertDialog dialog = new AlertDialog.Builder(this).setTitle(R.string.more).setItems(items, (d, which) -> {
+            chosen[0] = true;
+            if (which == 0) showBookmarks(); else if (which == 1) showSearchDialog(); else showSettings();
+        }).create();
+        dialog.setOnDismissListener(d -> { if (!chosen[0]) returnToReader(); });
+        dialog.show(); focusDialogTitle(dialog);
+    }
+
+    private void showBookmarks() {
+        if (reader == null) return;
+        LinearLayout box = listPage();
+        Button add = button(getString(R.string.add_bookmark));
+        add.setOnClickListener(v -> { addBookmark(); showBookmarks(); });
+        box.addView(add, new LinearLayout.LayoutParams(-1, dp(58)));
+        JSONArray marks = bookmarks();
+        if (marks.length() == 0) box.addView(emptyNotice(getString(R.string.no_bookmarks)));
+        for (int i = 0; i < marks.length(); i++) {
+            JSONObject mark = marks.optJSONObject(i); if (mark == null) continue;
+            int sentence = mark.optInt("sentence"); String name = mark.optString("text");
+            LinearLayout row = new LinearLayout(this); row.setGravity(Gravity.CENTER_VERTICAL); row.setPadding(0, dp(6), 0, dp(6));
+            Button open = listRowButton(name, 18);
+            open.setOnClickListener(v -> jumpFromList(sentence));
+            ImageButton remove = imageButton(android.R.drawable.ic_menu_delete, R.string.delete); remove.setContentDescription(getString(R.string.remove_bookmark, name));
+            remove.setOnClickListener(v -> { removeBookmark(sentence); showBookmarks(); });
+            row.addView(open, new LinearLayout.LayoutParams(0, -2, 1));
+            LinearLayout.LayoutParams removeParams = new LinearLayout.LayoutParams(dp(56), dp(56)); removeParams.setMargins(dp(10), 0, 0, 0); row.addView(remove, removeParams);
+            box.addView(row);
+        }
+        showListPage(R.string.bookmarks, box);
+    }
+
+    private void showSearchDialog() {
+        if (reader == null || reader.getCount() == 0) { returnToReader(); return; }
+        final boolean[] applied = {false};
+        EditText input = new EditText(this); input.setTextSize(uiSize(20)); input.setHint(getString(R.string.search_phrase)); input.setContentDescription(getString(R.string.search_phrase)); input.setPadding(dp(24), dp(12), dp(24), dp(12));
+        input.setText(lastSearch); input.setSelectAllOnFocus(true);
+        LinearLayout content = new LinearLayout(this); content.setOrientation(LinearLayout.VERTICAL); content.setPadding(dp(24), dp(12), dp(24), dp(12));
+        TextView heading = label(getString(R.string.search), 23, true); if (Build.VERSION.SDK_INT >= 28) heading.setAccessibilityHeading(true);
+        content.addView(heading); content.addView(input, new LinearLayout.LayoutParams(-1, -2));
+        // The dialog stays open on a hit and the book itself starts reading from the sentence found, in its
+        // own voice - exactly as if the reading had been started from that place. What is heard is then the
+        // book and not a description of it, and judging whether this is the right place is simply listening.
+        //
+        // The three buttons belong to the dialog itself rather than to the standard row underneath it. That
+        // row decides on its own whether the captions fit side by side or have to be stacked, reverses their
+        // order when it stacks them, and resizes the dialog whenever a caption changes. Three equal buttons
+        // in the order previous, next, close always stand the same way and are read in that order. What the
+        // screen reader says is what is written on them, so nobody is told a different thing than the person
+        // sitting next to them sees.
+        LinearLayout buttons = new LinearLayout(this); buttons.setPadding(0, dp(14), 0, 0); buttons.setGravity(Gravity.CENTER);
+        Button previousMatch = searchButton(R.string.previous_result);
+        Button nextMatch = searchButton(R.string.next_result);
+        Button closeSearch = searchButton(R.string.close);
+        buttons.addView(previousMatch, new LinearLayout.LayoutParams(-2, -2, 1));
+        buttons.addView(nextMatch, new LinearLayout.LayoutParams(-2, -2, 1));
+        buttons.addView(closeSearch, new LinearLayout.LayoutParams(-2, -2, 1));
+        content.addView(buttons, new LinearLayout.LayoutParams(-1, -2));
+        AlertDialog dialog = new AlertDialog.Builder(this).setView(content).create();
+        dialog.setOnDismissListener(d -> {
+            // After a hit the book is already reading; only the flag that would start it a second time is
+            // cleared. Without a hit nothing was touched, so the reading goes back to what it was.
+            if (applied[0]) cancelAutomaticResume(true); else returnToReader();
+        });
+        previousMatch.setOnClickListener(v -> playMatch(input, applied, -1));
+        nextMatch.setOnClickListener(v -> playMatch(input, applied, 1));
+        closeSearch.setOnClickListener(v -> dialog.dismiss());
+        dialog.show();
+        focusHeading(heading);
+    }
+    private Button searchButton(int caption) {
+        Button b = compactButton(getString(caption)); b.setTextSize(uiSize(17));
+        b.setPadding(dp(6), dp(10), dp(6), dp(10)); b.setMinimumHeight(dp(56));
+        return b;
+    }
+    private void playMatch(EditText input, boolean[] applied, int direction) {
+        if (reader == null) return;
+        lastSearch = input.getText().toString().trim();
+        int found = direction > 0 ? reader.findSentence(lastSearch, reader.getCurrent()) : reader.findPreviousSentence(lastSearch, reader.getCurrent());
+        if (found < 0) { toast(getString(R.string.not_found)); return; }
+        applied[0] = true;
+        cancelAutomaticResume(true);
+        reader.seekTo(found); reader.play();
+    }
+
+    // Lands the reader on a sentence chosen from a list and leaves the page behind.
+    private void jumpFromList(int sentence) {
+        if (reader == null) return;
+        reader.seekTo(sentence);
+        pausedAutomaticallyOutsideReader = false;
+        closeRecent();
+        scheduleAutomaticPlayback();
+    }
+    // A row of a list carries a whole sentence or a whole file name, so it wraps over as many lines as it
+    // needs and the row grows with it. A fixed height left the text hanging outside the button: the standard
+    // background is drawn a little inside the edges of the view, so without this padding the last line ended
+    // up beyond it instead of inside one clean rectangle.
+    private Button listRowButton(String name, int textSize) {
+        Button row = compactButton(name); row.setGravity(Gravity.START | Gravity.CENTER_VERTICAL); row.setTextSize(uiSize(textSize)); row.setContentDescription(name);
+        row.setPadding(dp(16), dp(14), dp(16), dp(14)); row.setMinimumHeight(dp(64));
+        return row;
+    }
+    private LinearLayout listPage() { LinearLayout box = new LinearLayout(this); box.setOrientation(LinearLayout.VERTICAL); box.setPadding(dp(4), 0, dp(4), 0); return box; }
+    private TextView emptyNotice(String message) { TextView empty = label(message, 19, false); empty.setPadding(0, dp(24), 0, dp(24)); return empty; }
+    private void showListPage(int headingResource, LinearLayout box) { showSettingsPage(headingResource, box, null, null, null); }
+
+    private JSONArray bookmarks() {
+        try { JSONObject all = new JSONObject(documents().getString("bookmarks", "{}")); JSONArray marks = all.optJSONArray(currentUri); if (marks != null) return marks; }
+        catch (JSONException ignored) {}
+        return new JSONArray();
+    }
+    private void saveBookmarks(JSONArray marks) {
+        try { JSONObject all = new JSONObject(documents().getString("bookmarks", "{}")); all.put(currentUri, marks); documents().edit().putString("bookmarks", all.toString()).apply(); }
+        catch (JSONException ignored) {}
+    }
+    private void addBookmark() {
+        if (reader == null || reader.getCount() == 0 || currentUri.isEmpty()) return;
+        int sentence = reader.getCurrent();
+        // The whole sentence. Cut short, it was exactly the missing half that said which place this is.
+        String preview = reader.sentenceText(sentence);
+        if (preview.isEmpty()) preview = getString(R.string.sentence_position, sentence + 1);
+        JSONArray marks = bookmarks(), fresh = new JSONArray();
+        try {
+            boolean inserted = false;
+            for (int i = 0; i < marks.length(); i++) {
+                JSONObject mark = marks.getJSONObject(i);
+                if (mark.optInt("sentence") == sentence) { toast(getString(R.string.bookmark_exists)); return; }
+                if (!inserted && mark.optInt("sentence") > sentence) { fresh.put(new JSONObject().put("sentence", sentence).put("text", preview)); inserted = true; }
+                fresh.put(mark);
+            }
+            if (!inserted) fresh.put(new JSONObject().put("sentence", sentence).put("text", preview));
+        } catch (JSONException e) { return; }
+        saveBookmarks(fresh); toast(getString(R.string.bookmark_added));
+    }
+    private void removeBookmark(int sentence) {
+        JSONArray marks = bookmarks(), fresh = new JSONArray();
+        for (int i = 0; i < marks.length(); i++) { JSONObject mark = marks.optJSONObject(i); if (mark != null && mark.optInt("sentence") != sentence) fresh.put(mark); }
+        saveBookmarks(fresh);
+    }
+
     private void showSettings() {
         android.content.SharedPreferences p = getSettings();
         pausePlaybackOutsideReader(); sliderValues.clear();
@@ -604,9 +750,9 @@ public class MainActivity extends Activity implements ReaderService.Listener {
             for (int i = 0; i < count; i++) {
                 JSONObject item = recent.getJSONObject(i); String itemUri = item.optString("uri"), name = withoutTxtExtension(item.optString("name"));
                 LinearLayout row = new LinearLayout(this); row.setGravity(Gravity.CENTER_VERTICAL); row.setPadding(0, dp(6), 0, dp(6));
-                Button open = compactButton(name); open.setGravity(Gravity.START | Gravity.CENTER_VERTICAL); open.setTextSize(uiSize(19)); open.setContentDescription(name); open.setOnClickListener(v -> openRecent(itemUri));
+                Button open = listRowButton(name, 19); open.setOnClickListener(v -> openRecent(itemUri));
                 ImageButton remove = imageButton(android.R.drawable.ic_menu_delete, R.string.delete); remove.setContentDescription(getString(R.string.remove_book, name)); remove.setOnClickListener(v -> removeRecent(itemUri));
-                row.addView(open, new LinearLayout.LayoutParams(0, dp(64), 1)); LinearLayout.LayoutParams removeParams = new LinearLayout.LayoutParams(dp(56), dp(56)); removeParams.setMargins(dp(10), 0, 0, 0); row.addView(remove, removeParams); list.addView(row);
+                row.addView(open, new LinearLayout.LayoutParams(0, -2, 1)); LinearLayout.LayoutParams removeParams = new LinearLayout.LayoutParams(dp(56), dp(56)); removeParams.setMargins(dp(10), 0, 0, 0); row.addView(remove, removeParams); list.addView(row);
             }
         } catch (JSONException e) { toast(getString(R.string.no_recent)); }
         setContentView(page); page.requestApplyInsets(); focusHeading(heading);
@@ -624,7 +770,8 @@ public class MainActivity extends Activity implements ReaderService.Listener {
         TextView heading = label(getString(headingResource), 25, true); heading.setPadding(dp(8), 0, 0, 0); if (Build.VERSION.SDK_INT >= 28) heading.setAccessibilityHeading(true); bar.addView(heading, new LinearLayout.LayoutParams(0, -2, 1)); page.addView(bar);
         ScrollView scrolling = new ScrollView(this); scrolling.addView(content); page.addView(scrolling, new LinearLayout.LayoutParams(-1, 0, 1));
         if (bottomExtra != null) page.addView(bottomExtra, new LinearLayout.LayoutParams(-1, dp(58)));
-        Button apply = button(getString(R.string.apply)); apply.setOnClickListener(v -> applyAction.run()); page.addView(apply, new LinearLayout.LayoutParams(-1, dp(58)));
+        // A page that only lists things has nothing to apply; Back is the only way out of it.
+        if (applyAction != null) { Button apply = button(getString(R.string.apply)); apply.setOnClickListener(v -> applyAction.run()); page.addView(apply, new LinearLayout.LayoutParams(-1, dp(58))); }
         appRoot = page; setContentView(page); page.requestApplyInsets(); focusHeading(heading);
     }
     private void removeRecent(String itemUri) {

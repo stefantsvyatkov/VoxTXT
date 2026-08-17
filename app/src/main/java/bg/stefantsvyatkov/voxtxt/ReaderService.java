@@ -149,6 +149,14 @@ public class ReaderService extends Service implements TextToSpeech.OnInitListene
         if (playing || pendingPlay || !sentences.isEmpty()) return;
         stopForeground(true); stopSelf();
     }
+    // Swiping the app away, or Close all in Recents, is a request to be rid of it, and it is taken literally:
+    // the reading stops, the notification disappears and the service ends, whether or not it was reading at
+    // that moment. Closing an app from the very place meant for closing apps should leave nothing behind.
+    // The position is saved on the way out, so the book opens again where it was left.
+    @Override public void onTaskRemoved(Intent rootIntent) {
+        pause(); stopForeground(true); stopSelf();
+        super.onTaskRemoved(rootIntent);
+    }
 
     public void setListener(Listener value) { listener = value; notifyState(); }
     public String getText() { return text; }
@@ -231,6 +239,50 @@ public class ReaderService extends Service implements TextToSpeech.OnInitListene
         seekTo(target); play();
     }
     public Range currentRange() { return sentences.isEmpty() ? new Range(0, 0) : sentences.get(current); }
+
+    // Finds the next sentence containing the phrase, continuing past the end of the book back to the start.
+    public int findSentence(String query, int fromSentence) {
+        String needle = query == null ? "" : query.trim();
+        if (needle.isEmpty() || sentences.isEmpty()) return -1;
+        // Compared in place. Lowercasing sentence after sentence would copy the whole book through memory
+        // before reporting that a word is not in it.
+        int from = sentences.get(Math.max(0, Math.min(fromSentence, sentences.size() - 1))).end;
+        int found = indexOfIgnoreCase(needle, from);
+        if (found < 0) found = indexOfIgnoreCase(needle, 0);
+        return found < 0 ? -1 : sentenceContaining(found);
+    }
+    // The same search the other way round: the nearest occurrence before the current sentence, continuing
+    // past the beginning of the book back to its end.
+    public int findPreviousSentence(String query, int fromSentence) {
+        String needle = query == null ? "" : query.trim();
+        if (needle.isEmpty() || sentences.isEmpty()) return -1;
+        int before = sentences.get(Math.max(0, Math.min(fromSentence, sentences.size() - 1))).start;
+        int found = lastIndexOfIgnoreCase(needle, before - 1);
+        if (found < 0) found = lastIndexOfIgnoreCase(needle, text.length());
+        return found < 0 ? -1 : sentenceContaining(found);
+    }
+    private int indexOfIgnoreCase(String needle, int from) {
+        int last = text.length() - needle.length();
+        for (int i = Math.max(0, from); i <= last; i++) if (text.regionMatches(true, i, needle, 0, needle.length())) return i;
+        return -1;
+    }
+    private int lastIndexOfIgnoreCase(String needle, int from) {
+        for (int i = Math.min(from, text.length() - needle.length()); i >= 0; i--) if (text.regionMatches(true, i, needle, 0, needle.length())) return i;
+        return -1;
+    }
+    private int sentenceContaining(int offset) {
+        int low = 0, high = sentences.size() - 1, found = 0;
+        while (low <= high) {
+            int middle = (low + high) / 2;
+            if (sentences.get(middle).start <= offset) { found = middle; low = middle + 1; } else high = middle - 1;
+        }
+        return found;
+    }
+    public String sentenceText(int index) {
+        if (index < 0 || index >= sentences.size()) return "";
+        Range range = sentences.get(index);
+        return text.substring(range.start, range.end).trim();
+    }
 
     private void split() {
         sentences.clear(); BreakIterator it = BreakIterator.getSentenceInstance(Locale.getDefault()); it.setText(text);
