@@ -1,5 +1,9 @@
 <?xml version="1.0" encoding="utf-8"?>
 <manifest xmlns:android="http://schemas.android.com/apk/res/android">
+    <uses-permission android:name="android.permission.INTERNET" />
+    <!-- Android 9 and older have no Downloads collection to write into, so the saved file goes to the public
+         Download folder the old way, which needs this permission there and only there. -->
+    <uses-permission android:name="android.permission.WRITE_EXTERNAL_STORAGE" android:maxSdkVersion="28" />
     <uses-permission android:name="android.permission.POST_NOTIFICATIONS" />
     <uses-permission android:name="android.permission.FOREGROUND_SERVICE" />
     <uses-permission android:name="android.permission.FOREGROUND_SERVICE_MEDIA_PLAYBACK" />
@@ -18,13 +22,59 @@
         android:theme="@style/AppTheme">
         <activity
             android:name=".MainActivity"
-            android:exported="true">
+            android:exported="true"
+            android:launchMode="singleTask">
             <intent-filter>
                 <action android:name="android.intent.action.MAIN" />
                 <category android:name="android.intent.category.LAUNCHER" />
             </intent-filter>
+            <!-- What a file manager says a file is depends entirely on the file manager. Some report a book
+                 as text, some by its proper type, and plenty report anything they do not recognise as a
+                 nameless stream of bytes. All of those are accepted here; what the file actually is gets
+                 decided by looking inside it, and an unsuitable one is refused with a plain message. -->
             <intent-filter>
                 <action android:name="android.intent.action.VIEW" />
+                <category android:name="android.intent.category.DEFAULT" />
+                <category android:name="android.intent.category.BROWSABLE" />
+                <data android:mimeType="text/plain" />
+                <data android:mimeType="text/*" />
+                <data android:mimeType="application/epub+zip" />
+                <data android:mimeType="application/x-fictionbook+xml" />
+                <data android:mimeType="application/fb2" />
+                <data android:mimeType="application/vnd.openxmlformats-officedocument.wordprocessingml.document" />
+                <data android:mimeType="application/zip" />
+                <data android:mimeType="application/octet-stream" />
+            </intent-filter>
+            <!-- And for the managers that offer no type at all, the name of the file is enough to go on. -->
+            <intent-filter>
+                <action android:name="android.intent.action.VIEW" />
+                <category android:name="android.intent.category.DEFAULT" />
+                <category android:name="android.intent.category.BROWSABLE" />
+                <data android:scheme="content" />
+                <data android:scheme="file" />
+                <data android:host="*" />
+                <data android:pathPattern=".*\\.txt" />
+                <data android:pathPattern=".*\\.fb2" />
+                <data android:pathPattern=".*\\.epub" />
+                <data android:pathPattern=".*\\.docx" />
+                <data android:pathPattern=".*\\..*\\.txt" />
+                <data android:pathPattern=".*\\..*\\.fb2" />
+                <data android:pathPattern=".*\\..*\\.epub" />
+                <data android:pathPattern=".*\\..*\\.docx" />
+            </intent-filter>
+            <!-- Share from a browser. The browser sends the address as plain text, sometimes with the page
+                 title in front of it; the address is picked out of whatever arrives. -->
+            <intent-filter>
+                <action android:name="android.intent.action.SEND" />
+                <category android:name="android.intent.category.DEFAULT" />
+                <data android:mimeType="text/plain" />
+            </intent-filter>
+            <!-- Text selected inside another app. The toolbar that appears over a selection does not use the
+                 share sheet at all; it lists apps that have offered to process text, which is a separate
+                 declaration. Without it, highlighting a passage anywhere and sending it here is impossible -
+                 the only way in would be an app that happens to offer Share for its selection. -->
+            <intent-filter>
+                <action android:name="android.intent.action.PROCESS_TEXT" />
                 <category android:name="android.intent.category.DEFAULT" />
                 <data android:mimeType="text/plain" />
             </intent-filter>

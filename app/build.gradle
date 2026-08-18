@@ -65,6 +65,15 @@ android {
     }
 }
 
+dependencies {
+    // The two libraries behind Read the web page. Readability4J is a port of the same Readability that
+    // Firefox uses for its Reader View; jsoup is the HTML parser both it and the app rely on. Readability4J
+    // asks for an old jsoup, so the current one is declared here and wins - the same pairing a live reader
+    // app on Play (Feeder) ships today.
+    implementation 'org.jsoup:jsoup:1.23.1'
+    implementation 'net.dankito.readability4j:readability4j:1.0.8'
+}
+
 androidComponents {
     onVariants(selector().withBuildType('release')) { variant ->
         // Named after the release label in versionName ('1.0-beta3' -> VoxTXT-beta3.apk), so a new release

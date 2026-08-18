@@ -25,9 +25,6 @@ public class ReaderService extends Service implements TextToSpeech.OnInitListene
     private static final String PREVIEW_UTTERANCE = "voice-preview";
     private static final String END_UTTERANCE = "end-of-text";
     private static final long PREVIEW_RETRY_MS = 700L;
-    // Long enough to be heard as a deliberate pause, short enough that nobody wonders whether the reading
-    // has stalled. The same value is used before the text and before the closing sound.
-    private static final long CUE_GAP_MS = 600L;
     private static final String PARAM_VOICE_NAME = "voiceName";
 
     public interface Listener { void onPlaybackState(int index, int count, boolean playing); void onPlaybackError(String message); void onPreviewState(boolean speaking); }
@@ -45,12 +42,20 @@ public class ReaderService extends Service implements TextToSpeech.OnInitListene
     public interface VoicesCallback { void onVoices(List<VoiceOption> voices); }
 
     private final IBinder binder = new ReaderBinder();
+    // Two channels, and the difference between them is who owns what is on them.
+    //
+    // speechHandler carries only what this app has scheduled: the next sentence after the pause between
+    // them, the start left waiting while the seek buttons are being tapped, the delay before a retry.
+    // Moving, pausing and seeking cancel all of that, because none of it is wanted any more.
+    //
+    // handler carries what the engine has told us - that a sentence finished, stopped or failed. Those are
+    // reports of things that have already happened, and clearing them wholesale was how a finished sentence
+    // could be lost and spoken again.
     private final Handler handler = new Handler(Looper.getMainLooper());
+    private final Handler speechHandler = new Handler(Looper.getMainLooper());
     private final Handler sleepHandler = new Handler(Looper.getMainLooper());
     private final Handler focusHandler = new Handler(Looper.getMainLooper());
     private final Handler lifecycleHandler = new Handler(Looper.getMainLooper());
-    private final Handler cueHandler = new Handler(Looper.getMainLooper());
-    private MediaPlayer cuePlayer;
     private boolean reachedEnd;
     private final ArrayList<Range> sentences = new ArrayList<>();
     private TextToSpeech tts, previewTts, previewSpeaker;
@@ -85,6 +90,12 @@ public class ReaderService extends Service implements TextToSpeech.OnInitListene
     private boolean pausedByFocusLoss;
     private long utteranceSerial;
     private String activeUtterance = "";
+    private long utteranceStartedAt;
+    // A tap on Previous or Next stops the engine and starts the next sentence. Tap again quickly and the
+    // sentence just started is stopped in turn - so the reading is asked to start something it will not
+    // finish, over and over. Waiting out the taps means the engine is asked once, for the sentence actually
+    // landed on. Short enough not to be felt on a single tap.
+    private static final long SEEK_SETTLE_MS = 180L;
     private MediaSession mediaSession;
     private AudioManager audioManager;
     private AudioFocusRequest audioFocusRequest;
@@ -181,8 +192,11 @@ public class ReaderService extends Service implements TextToSpeech.OnInitListene
         probe[0] = requested.isEmpty() ? new TextToSpeech(this, listener) : new TextToSpeech(this, listener, requested);
     }
 
-    public void load(String newUri, String newTitle, String newText, int position) {
+    // A book and a web page each have their own engine, voice, speed and pitch. Which of the two is in use
+    // is decided by what was opened, and is switched here rather than being asked for every sentence.
+    public void load(String newUri, String newTitle, String newText, int position, boolean fromWeb) {
         pause(); reachedEnd = false; uri = newUri; title = newTitle; text = newText; current = Math.max(0, position);
+        useProfile(fromWeb ? WEB_PROFILE : "");
         if (sleepRewindAvailable && !newUri.equals(getSharedPreferences(SLEEP_STATE, MODE_PRIVATE).getString("uri", ""))) clearSleepRewindState();
         split(); current = Math.min(current, Math.max(0, sentences.size() - 1));
         savePosition(); notifyState();
@@ -198,32 +212,40 @@ public class ReaderService extends Service implements TextToSpeech.OnInitListene
         // The last sentence has already been read out; playing again would simply repeat it.
         if (reachedEnd) { error(getString(R.string.no_more_text)); return; }
         if (captureSleepStartOnPlay) { sleepStartSentence = current; captureSleepStartOnPlay = false; }
+        // Anything already waiting to be spoken is dropped first. Moving a sentence leaves a start waiting
+        // a moment, so pressing Play inside that moment used to speak the sentence, then speak it again
+        // when the waiting start came round.
+        speechHandler.removeCallbacksAndMessages(null);
         applySettings(); transientRetries = 0; engineRestarts = 0; pausedByFocusLoss = false; playing = true;
         if (!requestAudioFocus()) { playing = false; notifyState(); updateNotification(); return; }
         startSilentPlayback(); promoteMediaSession(); updateMediaSession(); startService(new Intent(this, ReaderService.class)); startForeground(NOTIFICATION_ID, notification());
-        if (current == 0 && cuesEnabled()) { notifyState(); updateNotification(); openWithCue(); return; }
         speakCurrent();
     }
     public void pause() { pausedByFocusLoss = false; pause(true); }
     private void pause(boolean releaseFocus) {
-        pendingPlay = false; playing = false; activeUtterance = ""; utteranceSerial++; handler.removeCallbacksAndMessages(null); stopCue(); if (tts != null) tts.stop(); stopSilentPlayback();
+        pendingPlay = false; playing = false; activeUtterance = ""; utteranceSerial++; speechHandler.removeCallbacksAndMessages(null); if (tts != null) tts.stop(); stopSilentPlayback();
         restoreVolumeAfterFade(); if (releaseFocus) abandonAudioFocus(); savePosition(); if (!sentences.isEmpty()) updateNotification(); notifyState();
     }
     public void move(int delta) {
         // Moving cancels whatever the previous step left pending. Without this, stopping a sentence number
         // that is still being announced counts as "finished" and starts the reading in the middle of a new
-        // seek, and a cue left running speaks or stops playback afterwards.
-        boolean resume = playing; reachedEnd = false; playing = false; activeUtterance = ""; utteranceSerial++; handler.removeCallbacksAndMessages(null); stopCue(); if (tts != null) tts.stop();
+        boolean resume = playing; reachedEnd = false; playing = false; activeUtterance = ""; utteranceSerial++; speechHandler.removeCallbacksAndMessages(null); if (tts != null) tts.stop();
         if (!sentences.isEmpty()) current = Math.max(0, Math.min(current + delta, sentences.size() - 1));
-        savePosition(); notifyState(); if (resume) { playing = true; speakCurrent(); } else updateNotification();
+        // Stopping the engine and starting it again is how a move is carried out, but it is not what is
+        // happening as far as anyone watching is concerned: the reading was running before the move and
+        // is running after it. Reporting the momentary stop turned the Play button into a flashing light
+        // and did the same to the notification, once per step of a fast seek.
+        playing = resume;
+        savePosition(); notifyState();
+        if (resume) speechHandler.postDelayed(this::speakCurrent, SEEK_SETTLE_MS); else updateNotification();
     }
     public void seekTo(int index) {
-        reachedEnd = false; playing = false; activeUtterance = ""; utteranceSerial++; handler.removeCallbacksAndMessages(null); stopCue(); if (tts != null) tts.stop(); stopSilentPlayback();
+        reachedEnd = false; playing = false; activeUtterance = ""; utteranceSerial++; speechHandler.removeCallbacksAndMessages(null); if (tts != null) tts.stop(); stopSilentPlayback();
         if (!sentences.isEmpty()) current = Math.max(0, Math.min(index, sentences.size() - 1));
         savePosition(); notifyState(); updateNotification();
     }
     public void updateSettings(boolean playAfterUpdate) {
-        String wantedEngine = getSharedPreferences("reader_settings", MODE_PRIVATE).getString("engine", "");
+        String wantedEngine = getSharedPreferences("reader_settings", MODE_PRIVATE).getString(setting("engine"), "");
         pause();
         if (!wantedEngine.equals(activeEngine)) { pendingPlay = playAfterUpdate; initializeTts(wantedEngine); }
         else { if (ready) applySettings(); if (playAfterUpdate) play(); }
@@ -297,11 +319,13 @@ public class ReaderService extends Service implements TextToSpeech.OnInitListene
     // engine's entire voice list to do it - was work that changed nothing in what is heard.
     private void speakCurrent() {
         if (!playing || current >= sentences.size()) { pause(); return; }
+        if (!ready || tts == null) { pendingPlay = true; return; }
         Range range = sentences.get(current);
         activeUtterance = "sentence-" + current + "-" + (++utteranceSerial); String utterance = activeUtterance;
+        utteranceStartedAt = SystemClock.elapsedRealtime();
         android.content.SharedPreferences p = getSharedPreferences("reader_settings", MODE_PRIVATE);
-        Bundle parameters = new Bundle(); parameters.putFloat(TextToSpeech.Engine.KEY_PARAM_VOLUME, p.getInt("volume_percent", 50) / 100f);
-        addVoiceParam(parameters, p.getString(voicePreferenceKey(activeEngine), ""));
+        Bundle parameters = new Bundle(); parameters.putFloat(TextToSpeech.Engine.KEY_PARAM_VOLUME, p.getInt(setting("volume_percent"), 50) / 100f);
+        addVoiceParam(parameters, p.getString(voicePreferenceKey(profile, activeEngine), ""));
         int result = tts.speak(text.substring(range.start, range.end).trim(), TextToSpeech.QUEUE_FLUSH, parameters, utterance);
         if (result == TextToSpeech.ERROR) { pause(); error(getString(R.string.tts_error)); }
         notifyState(); updateNotification();
@@ -310,61 +334,32 @@ public class ReaderService extends Service implements TextToSpeech.OnInitListene
         if (!playing || !utterance.equals(activeUtterance)) return;
         transientRetries = 0; engineRestarts = 0; activeUtterance = ""; current++; savePosition();
         if (current >= sentences.size()) { current = Math.max(0, sentences.size() - 1); reachedEnd = true; announceEnd(); return; }
-        int delay = getSharedPreferences("reader_settings", MODE_PRIVATE).getInt("sentence_pause", 0);
-        handler.postDelayed(ReaderService.this::speakCurrent, delay);
+        int delay = getSharedPreferences("reader_settings", MODE_PRIVATE).getInt(setting("sentence_pause"), 0);
+        speechHandler.postDelayed(ReaderService.this::speakCurrent, delay);
     }
-    // The end is signalled one way or the other, never both: the closing sound when it is switched on,
-    // the spoken words when it is not.
+    // A book ends and says so; there is a lot of it behind you and it is worth being told where you are. An
+    // article is three minutes long and its end is obvious from the fact that the voice stopped - announcing
+    // it there is the app talking about itself. Pressing Play past the end still says there is no more text,
+    // in both cases.
     private void announceEnd() {
         savePosition(); notifyState();
-        if (cuesEnabled()) { closeWithCue(); return; }
+        if (WEB_PROFILE.equals(profile)) { pause(); return; }
         activeUtterance = END_UTTERANCE;
         android.content.SharedPreferences p = getSharedPreferences("reader_settings", MODE_PRIVATE);
-        Bundle parameters = new Bundle(); parameters.putFloat(TextToSpeech.Engine.KEY_PARAM_VOLUME, p.getInt("volume_percent", 50) / 100f);
-        addVoiceParam(parameters, p.getString(voicePreferenceKey(activeEngine), ""));
+        Bundle parameters = new Bundle(); parameters.putFloat(TextToSpeech.Engine.KEY_PARAM_VOLUME, p.getInt(setting("volume_percent"), 50) / 100f);
+        addVoiceParam(parameters, p.getString(voicePreferenceKey(profile, activeEngine), ""));
         if (tts == null || tts.speak(getString(R.string.end_of_text), TextToSpeech.QUEUE_FLUSH, parameters, END_UTTERANCE) == TextToSpeech.ERROR) pause();
     }
     private void retryCurrentSentence(String utterance) {
         if (!utterance.equals(activeUtterance)) return;
         activeUtterance = "";
         if (!playing) return;
-        if (transientRetries++ < 3) { handler.postDelayed(ReaderService.this::speakCurrent, 1200); return; }
+        if (transientRetries++ < 3) { speechHandler.postDelayed(ReaderService.this::speakCurrent, 1200); return; }
         // The engine lives in its own process and the system can kill it. Then the connection this app holds
         // is dead and asking it to speak again will never work, however many times it is asked - it has to
         // be built anew. One rebuild per failure, and only then does the reading give up.
         if (engineRestarts++ < 1) { transientRetries = 0; pendingPlay = true; initializeTts(activeEngine); return; }
         pause(); error(getString(R.string.tts_error));
-    }
-    private boolean cuesEnabled() { return getSharedPreferences("reader_settings", MODE_PRIVATE).getBoolean("text_cues", true); }
-    // Opening: cue, then the gap, then the text. Closing: text, then the gap, then the cue.
-    private void openWithCue() {
-        playCue(true, () -> cueHandler.postDelayed(() -> { if (playing) speakCurrent(); }, CUE_GAP_MS));
-    }
-    private void closeWithCue() {
-        cueHandler.postDelayed(() -> playCue(false, this::pause), CUE_GAP_MS);
-    }
-    // Played at the same volume as the speech, so the cue never jumps out next to the voice.
-    private void playCue(boolean opening, Runnable after) {
-        stopCue();
-        try {
-            MediaPlayer player = MediaPlayer.create(this, opening ? R.raw.cue_start : R.raw.cue_end);
-            if (player == null) { after.run(); return; }
-            float volume = Math.max(0, Math.min(100, getSharedPreferences("reader_settings", MODE_PRIVATE).getInt("volume_percent", 50))) / 100f;
-            player.setVolume(volume, volume);
-            player.setOnCompletionListener(finished -> { releaseCue(finished); after.run(); });
-            player.setOnErrorListener((failed, what, extra) -> { releaseCue(failed); after.run(); return true; });
-            cuePlayer = player;
-            player.start();
-        } catch (Exception unavailable) { after.run(); }
-    }
-    private void releaseCue(MediaPlayer player) {
-        if (cuePlayer == player) cuePlayer = null;
-        try { player.release(); } catch (Exception ignored) {}
-    }
-    private void stopCue() {
-        cueHandler.removeCallbacksAndMessages(null);
-        MediaPlayer player = cuePlayer; cuePlayer = null;
-        if (player != null) { try { player.stop(); } catch (Exception ignored) {} try { player.release(); } catch (Exception ignored) {} }
     }
     private void startSilentPlayback() {
         if (silentAudioTrack != null) return;
@@ -382,8 +377,8 @@ public class ReaderService extends Service implements TextToSpeech.OnInitListene
     }
     private void applySettings() {
         android.content.SharedPreferences p = getSharedPreferences("reader_settings", MODE_PRIVATE);
-        tts.setSpeechRate(speechRate(p.getInt("rate_percent", 20))); tts.setPitch(speechPitch(p.getInt("pitch_percent", 20)));
-        applyVoice(tts, p.getString(voicePreferenceKey(activeEngine), ""));
+        tts.setSpeechRate(speechRate(p.getInt(setting("rate_percent"), 20))); tts.setPitch(speechPitch(p.getInt(setting("pitch_percent"), 20)));
+        applyVoice(tts, p.getString(voicePreferenceKey(profile, activeEngine), ""));
     }
     // setVoice() is only half the story. Android forwards the chosen voice to the engine only when the
     // engine answered its loadVoice call with SUCCESS, and the default implementation of that call accepts
@@ -477,7 +472,17 @@ public class ReaderService extends Service implements TextToSpeech.OnInitListene
         if (instance != null) { try { instance.stop(); instance.shutdown(); } catch (Exception ignored) {} }
         notifyPreview(false);
     }
-    public static String voicePreferenceKey(String engine) { return "voice_for_" + (engine == null || engine.isEmpty() ? "system_default" : engine); }
+    public static final String WEB_PROFILE = "web_";
+    private String profile = "";
+    private String setting(String name) { return profile + name; }
+    private void useProfile(String wanted) {
+        if (wanted.equals(profile)) return;
+        profile = wanted;
+        String wantedEngine = getSharedPreferences("reader_settings", MODE_PRIVATE).getString(setting("engine"), "");
+        if (!wantedEngine.equals(activeEngine)) initializeTts(wantedEngine);
+        else if (ready) applySettings();
+    }
+    public static String voicePreferenceKey(String profile, String engine) { return profile + "voice_for_" + (engine == null || engine.isEmpty() ? "system_default" : engine); }
     // The whole voice list is decided here, so there is one place to reason about instead of rules spread
     // between the service and the screen. Engines name and duplicate their voices very differently, so the
     // list is built twice if it has to be: once with the availability filters, and if that leaves nothing,
@@ -566,7 +571,8 @@ public class ReaderService extends Service implements TextToSpeech.OnInitListene
         tts.setOnUtteranceProgressListener(new UtteranceProgressListener() {
             @Override public void onStart(String id) { handler.post(() -> { if (id.equals(activeUtterance)) refreshSilentPlaybackPriority(); }); }
             @Override public void onDone(String id) { handler.post(() -> { if (isPreview(id)) previewFinished(id); else if (END_UTTERANCE.equals(id)) pause(); else finishCurrentSentence(id); }); }
-            @Override public void onStop(String id, boolean interrupted) { handler.post(() -> { if (isPreview(id)) { previewStopped(id, interrupted); return; } if (END_UTTERANCE.equals(id)) { pause(); return; } if (playing && interrupted && id.equals(activeUtterance)) retryCurrentSentence(id); }); }
+            @Override public void onStop(String id, boolean interrupted) { handler.post(() -> { if (isPreview(id)) { previewStopped(id, interrupted); return; } if (END_UTTERANCE.equals(id)) { pause(); return; } if (playing && interrupted && id.equals(activeUtterance)
+                    && SystemClock.elapsedRealtime() - utteranceStartedAt > SEEK_SETTLE_MS * 2) retryCurrentSentence(id); }); }
             @Override public void onError(String id) { handler.post(() -> { if (isPreview(id)) previewFinished(id); else if (END_UTTERANCE.equals(id)) pause(); else retryCurrentSentence(id); }); }
         });
         notifyState(); if (pendingPlay) { pendingPlay = false; play(); }
@@ -771,7 +777,7 @@ public class ReaderService extends Service implements TextToSpeech.OnInitListene
         return b.build();
     }
     private void updateNotification() { if (!sentences.isEmpty()) ((NotificationManager)getSystemService(NOTIFICATION_SERVICE)).notify(NOTIFICATION_ID, notification()); }
-    @Override public void onDestroy() { sleepHandler.removeCallbacksAndMessages(null); lifecycleHandler.removeCallbacksAndMessages(null); pause(); stopCue(); stopPreview(); flushVolumeRestore(); stopSilentPlayback(); if (audioManager != null) audioManager.unregisterAudioDeviceCallback(audioDeviceCallback); try { unregisterReceiver(becomingNoisyReceiver); } catch (IllegalArgumentException ignored) {} if (mediaSession != null) mediaSession.release(); if (tts != null) tts.shutdown(); super.onDestroy(); }
+    @Override public void onDestroy() { speechHandler.removeCallbacksAndMessages(null); handler.removeCallbacksAndMessages(null); sleepHandler.removeCallbacksAndMessages(null); lifecycleHandler.removeCallbacksAndMessages(null); pause(); stopPreview(); flushVolumeRestore(); stopSilentPlayback(); if (audioManager != null) audioManager.unregisterAudioDeviceCallback(audioDeviceCallback); try { unregisterReceiver(becomingNoisyReceiver); } catch (IllegalArgumentException ignored) {} if (mediaSession != null) mediaSession.release(); if (tts != null) tts.shutdown(); super.onDestroy(); }
 
     public static class Range { public final int start, end; Range(int start, int end) { this.start = start; this.end = end; } }
 }
