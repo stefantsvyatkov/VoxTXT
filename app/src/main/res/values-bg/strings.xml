@@ -84,7 +84,7 @@
     <string name="unsupported_content">Съдържанието не се поддържа.</string>
     <string name="keep_screen_off">Изключено</string>
     <string name="keep_screen_both">Документи и уеб страници</string>
-    <string name="close_on_back">Затваряне на приложението с бутона Назад</string>
+    <string name="close_on_back">Затваряне на приложението с Back или Home</string>
     <string name="web_from_start">Начало на уеб страница от началото ѝ</string>
     <string name="keep_screen_on">Задържане на екрана включен по време на четене</string>
     <string name="prevent_device_autoplay">Предотвратяване на автоматичното възпроизвеждане при свързване на аудио устройство</string>

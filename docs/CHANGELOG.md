@@ -5,19 +5,24 @@
 ### New
 
 1. Copy text, in More, puts the article that was read in on the clipboard. It is offered for a web page; a passage shared from another app came from somewhere that already has it.
-2. Close the app with the Back button, in Options, off by default. Back normally steps aside and leaves the reading running, the way every player does, so a stray press costs nothing and the headset button brings it straight back. The option turns Back into a full stop instead.
+2. Close the app with Back or Home, in Options, off by default. Back normally steps aside and leaves the reading running, the way every player does, so a stray press costs nothing and the headset button brings it straight back. The option turns Back into a full stop instead.
 
 ### Changed
 
-1. Buttons are blue rather than the grey the platform gives them: deep blue with white lettering on the light theme, light blue with black lettering on the dark one. In both the lettering stays above nine to one against its own background, so none of the contrast is given up for the colour.
-2. The open tab in Voice settings and in Recent files is filled in, so which one is open can be seen and not only heard.
-3. The dropdowns have an outline, so they read as fields rather than as a line of text.
+1. Opening a file with Open TXT starts reading it. Every other way in already did — a file chosen from Recent files, a page shared from the browser, a book opened from a file manager — and Open was the one that left you looking at a book and wondering why it was silent.
+2. Buttons are blue rather than the grey the platform gives them, deep on the light theme and a shade lighter on the dark one so that the button is still a shape against a black page. The lettering is white on both and none of the contrast is given up for the colour.
+3. The sentence being read is marked in yellow and written in black, in both themes — a highlighter over ink, which against a black page is the most visible thing on the screen.
+4. The sliders are thicker, and the part already covered is drawn in the colour of the app against a grey track. They used to be a hairline, and white on light grey said nothing about how far along they were.
+5. The launcher icon is adaptive, so it takes the shape the phone gives icons instead of being cropped, and it has a monochrome form for themed icons.
+6. The open tab in Voice settings and in Recent files is filled in, so which one is open can be seen and not only heard.
+7. The dropdowns have an outline, so they read as fields rather than as a line of text.
 
 ### Fixed
 
 1. Clearing the app from Recents did not always finish it off. The book stayed loaded and the media session stayed open, so a Play from a headset or from the notification brought the app back from the dead; and because a service something is still bound to does not end when asked, the player could sit in the notification shade doing nothing. Stopping now drops the document, closes the session and takes the notification down by name.
 2. Footnote reference numbers were read out stuck to the word in front of them — "the tavern1" — in FB2 and in EPUB alike.
 3. The notification carried the app icon, which Android draws as a silhouette, so a solid white square appeared in the status bar instead of a symbol.
+4. Names in Recent files, in Bookmarks and in the sleep timer were invisible: the rows had been given the lettering that belongs on a filled button and then had the fill taken away, leaving white on white in one theme and black on black in the other. The screen reader read them out all along.
 
 ## Changes in Beta 4
 

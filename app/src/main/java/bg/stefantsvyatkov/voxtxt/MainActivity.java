@@ -61,6 +61,7 @@ public class MainActivity extends Activity implements ReaderService.Listener {
     private boolean showingRecent;
     private String renderedText;
     private BackgroundColorSpan highlightSpan;
+    private android.text.style.ForegroundColorSpan highlightInk;
     private Runnable subpageCloseAction, previewAction;
     private String lastSearch = "";
     // Whatever is being read, kept so that Save as TXT has something to write, and two facts about where it
@@ -74,6 +75,9 @@ public class MainActivity extends Activity implements ReaderService.Listener {
     // voice, but only the fetched one is worth copying: a shared passage came from a place that already had
     // it.
     private boolean fromWebPage;
+    // True while a screen of another app is open on our behalf - the file picker - so that leaving for it is
+    // not mistaken for the user walking away.
+    private boolean leavingForResult;
     private Button previewButton;
     private boolean previewSpeaking;
     private boolean updatingBookProgress, resumeAfterProgressSeek, draggingBookProgress;
@@ -231,7 +235,7 @@ public class MainActivity extends Activity implements ReaderService.Listener {
 
         LinearLayout playerPanel = new LinearLayout(this); playerPanel.setOrientation(LinearLayout.VERTICAL); playerPanel.setGravity(Gravity.BOTTOM); playerPanel.setPadding(dp(12), 0, dp(12), 0); playerPanel.setBackgroundColor(appColor(R.color.panel_bg));
         TextView progressValue = addSliderHeader(playerPanel, R.string.book_progress, 17, 0);
-        bookProgress = new BookProgressSeekBar(this);
+        bookProgress = new BookProgressSeekBar(this); thicken(bookProgress);
         sliderValues.put(bookProgress, progressValue);
         bookProgress.setOnSeekBarChangeListener(new SeekBar.OnSeekBarChangeListener() {
             public void onStartTrackingTouch(SeekBar seekBar) { draggingBookProgress = true; resumeAfterProgressSeek = reader != null && reader.isPlaying(); if (resumeAfterProgressSeek) reader.pause(); }
@@ -275,13 +279,35 @@ public class MainActivity extends Activity implements ReaderService.Listener {
     private ImageButton imageButton(int icon, int description) { ImageButton b = new ImageButton(this); b.setImageResource(icon); b.setScaleType(ImageView.ScaleType.CENTER_INSIDE); b.setImageTintList(android.content.res.ColorStateList.valueOf(appColor(R.color.text_primary))); b.setContentDescription(getString(description)); b.setBackgroundTintList(android.content.res.ColorStateList.valueOf(Color.TRANSPARENT)); b.setPadding(dp(7), dp(7), dp(7), dp(7)); return b; }
     private void addPlayerButton(LinearLayout row, ImageButton button) { FrameLayout column = new FrameLayout(this); column.addView(button, new FrameLayout.LayoutParams(dp(56), dp(62), Gravity.CENTER)); row.addView(column, new LinearLayout.LayoutParams(0, dp(64), 1)); }
     private Button compactButton(String value) { Button b = button(value); b.setMinWidth(0); b.setMinimumWidth(0); b.setPadding(dp(12), 0, dp(12), 0); return b; }
+    // The platform draws a slider as a hairline. At the sizes this app uses everywhere else it looks like a
+    // scratch on the screen rather than a control, and for someone who makes out shapes but not detail it is
+    // the hardest thing here to see. This is the same slider, thick enough to find with a finger and no
+    // thicker.
+    //
+    // The two halves are coloured apart on purpose. Filled in the colour of the app, empty in a grey that
+    // belongs to its theme: white on light grey looked like one bar and gave away nothing about how far it
+    // had been dragged, which is the one thing a slider exists to say.
+    private void thicken(SeekBar bar) {
+        int track = appColor(R.color.slider_track), filled = appColor(R.color.slider_fill);
+        android.graphics.drawable.GradientDrawable behind = new android.graphics.drawable.GradientDrawable();
+        behind.setColor(track); behind.setCornerRadius(dp(3)); behind.setSize(-1, dp(5));
+        android.graphics.drawable.GradientDrawable ahead = new android.graphics.drawable.GradientDrawable();
+        ahead.setColor(filled); ahead.setCornerRadius(dp(3)); ahead.setSize(-1, dp(5));
+        android.graphics.drawable.Drawable[] layers = {
+            behind, new android.graphics.drawable.ClipDrawable(ahead, Gravity.START, android.graphics.drawable.ClipDrawable.HORIZONTAL)};
+        android.graphics.drawable.LayerDrawable stack = new android.graphics.drawable.LayerDrawable(layers);
+        stack.setId(0, android.R.id.background); stack.setId(1, android.R.id.progress);
+        bar.setProgressDrawable(stack);
+        bar.setThumbTintList(android.content.res.ColorStateList.valueOf(filled));
+        bar.setSplitTrack(false);
+    }
     private int indexOf(String[] values, String wanted) {
         for (int i = 0; i < values.length; i++) if (values[i].equals(wanted)) return i;
         return 0;
     }
     private int dp(int value) { return (int)(value * getResources().getDisplayMetrics().density + .5f); }
     private float uiSize(float base) { return base * getSettings().getInt("interface_scale", 100) / 100f; }
-    private int appColor(int resource) { String theme = getSettings().getString("theme", "system"); if ("dark".equals(theme)) { if (resource == R.color.text_secondary) return Color.rgb(208,208,208); if (resource == R.color.highlight) return Color.rgb(0,82,128); if (resource == R.color.button_bg) return Color.rgb(100,181,246); if (resource == R.color.button_text) return Color.BLACK; return resource == R.color.text_primary || resource == R.color.accent ? Color.WHITE : Color.BLACK; } if ("light".equals(theme)) { if (resource == R.color.text_secondary) return Color.rgb(51,51,51); if (resource == R.color.highlight) return Color.rgb(125,183,232); if (resource == R.color.button_bg) return Color.rgb(13,71,161); if (resource == R.color.button_text) return Color.WHITE; return resource == R.color.text_primary || resource == R.color.accent ? Color.BLACK : Color.WHITE; } return getColor(resource); }
+    private int appColor(int resource) { String theme = getSettings().getString("theme", "system"); if ("dark".equals(theme)) { if (resource == R.color.text_secondary) return Color.rgb(208,208,208); if (resource == R.color.highlight) return Color.rgb(255,213,79); if (resource == R.color.button_bg) return Color.rgb(18,90,173); if (resource == R.color.button_text) return Color.WHITE; if (resource == R.color.slider_track) return Color.rgb(60,60,60); if (resource == R.color.slider_fill) return Color.rgb(66,165,245); return resource == R.color.text_primary || resource == R.color.accent ? Color.WHITE : Color.BLACK; } if ("light".equals(theme)) { if (resource == R.color.text_secondary) return Color.rgb(51,51,51); if (resource == R.color.highlight) return Color.rgb(255,213,79); if (resource == R.color.button_bg) return Color.rgb(13,71,161); if (resource == R.color.button_text) return Color.WHITE; if (resource == R.color.slider_track) return Color.rgb(201,201,201); if (resource == R.color.slider_fill) return Color.rgb(13,71,161); return resource == R.color.text_primary || resource == R.color.accent ? Color.BLACK : Color.WHITE; } return getColor(resource); }
     private android.content.SharedPreferences getSettings() { return getSharedPreferences("reader_settings", MODE_PRIVATE); }
     // Explicitly named so it no longer depends on the class package the way Activity.getPreferences() does.
     private android.content.SharedPreferences documents() { return getSharedPreferences(DOCUMENT_PREFS, MODE_PRIVATE); }
@@ -294,14 +320,20 @@ public class MainActivity extends Activity implements ReaderService.Listener {
         pausePlaybackOutsideReader();
         Intent i = new Intent(Intent.ACTION_OPEN_DOCUMENT).setType("*/*").addCategory(Intent.CATEGORY_OPENABLE)
             .putExtra(Intent.EXTRA_MIME_TYPES, OPENABLE_TYPES);
-        try { startActivityForResult(i, OPEN_TEXT); } catch (ActivityNotFoundException e) { toast(getString(R.string.open_failed)); returnToReader(); }
+        leavingForResult = true;
+        try { startActivityForResult(i, OPEN_TEXT); } catch (ActivityNotFoundException e) { leavingForResult = false; toast(getString(R.string.open_failed)); returnToReader(); }
     }
     @Override protected void onActivityResult(int request, int result, Intent data) {
         super.onActivityResult(request, result, data);
+        leavingForResult = false;
         if (request == OPEN_TEXT && result == RESULT_OK && data != null && data.getData() != null) {
             Uri uri = data.getData();
             try { getContentResolver().takePersistableUriPermission(uri, Intent.FLAG_GRANT_READ_URI_PERMISSION); } catch (Exception ignored) {}
-            resumeAfterFilePickerLoad = pausedAutomaticallyOutsideReader; pausedAutomaticallyOutsideReader = false;
+            // Choosing a file is asking for it to be read, exactly as choosing one from Recent files is,
+            // and as handing one over from another app is. It used to start only if the reading had been
+            // running before the picker opened, which made Open the one way in that left you looking at a
+            // book and wondering why it was silent.
+            resumeAfterFilePickerLoad = true; pausedAutomaticallyOutsideReader = false;
             loadUri(uri, true);
         } else if (request == OPEN_TEXT) returnToReader();
     }
@@ -537,11 +569,16 @@ public class MainActivity extends Activity implements ReaderService.Listener {
         // large files stutter.
         if (document != renderedText || !(body.getText() instanceof Spannable)) {
             renderedText = document; highlightSpan = new BackgroundColorSpan(appColor(R.color.highlight));
+            // Yellow in both themes, because that is what a highlighter is, and against a black page it is
+            // the most visible thing on the screen. White lettering on yellow would be unreadable, so the
+            // marked sentence is written in black wherever it appears - ink on a paper page.
+            highlightInk = new android.text.style.ForegroundColorSpan(Color.BLACK);
             body.setText(new SpannableString(document), TextView.BufferType.SPANNABLE);
         }
         Spannable marked = (Spannable)body.getText();
-        marked.removeSpan(highlightSpan);
+        marked.removeSpan(highlightSpan); marked.removeSpan(highlightInk);
         marked.setSpan(highlightSpan, r.start, r.end, Spannable.SPAN_EXCLUSIVE_EXCLUSIVE);
+        marked.setSpan(highlightInk, r.start, r.end, Spannable.SPAN_EXCLUSIVE_EXCLUSIVE);
         body.setContentDescription(document.substring(r.start, r.end).trim());
         status.setText(getString(R.string.sentence_count, index + 1, count));
         int percent = count <= 1 ? 0 : Math.round(index * 100f / (count - 1));
@@ -907,6 +944,11 @@ public class MainActivity extends Activity implements ReaderService.Listener {
     // something that can be opened.
     private Button listRowButton(String name, int textSize) {
         Button row = compactButton(name); row.setGravity(Gravity.START | Gravity.CENTER_VERTICAL); row.setTextSize(uiSize(textSize)); row.setContentDescription(name);
+        // The lettering has to come back to the colour of the page. A button hands out the colour that
+        // belongs on top of a filled button, and the fill is taken away on the next line - which left white
+        // on white in one theme and black on black in the other, so the rows were there and could be read
+        // aloud but could not be seen at all.
+        row.setTextColor(appColor(R.color.text_primary));
         android.util.TypedValue highlight = new android.util.TypedValue(); getTheme().resolveAttribute(android.R.attr.selectableItemBackground, highlight, true);
         row.setBackgroundResource(highlight.resourceId);
         // After the background, because a new one brings its own padding along and would undo this.
@@ -972,8 +1014,8 @@ public class MainActivity extends Activity implements ReaderService.Listener {
         int keepScreenSaved = Math.max(0, Math.min(KEEP_SCREEN_VALUES.length - 1, indexOf(KEEP_SCREEN_VALUES, p.getString("keep_screen", "off"))));
         keepScreenSpinner.setSelection(keepScreenSaved, false); configureSpinnerAccessibility(keepScreenSpinner, keepScreenNames);
         box.addView(keepScreenSpinner);
-        CheckBox closeOnBack = new CheckBox(this); closeOnBack.setText(R.string.close_on_back); closeOnBack.setTextSize(uiSize(18)); closeOnBack.setChecked(p.getBoolean("close_on_back", false)); closeOnBack.setPadding(0, dp(6), 0, dp(10)); box.addView(closeOnBack, new LinearLayout.LayoutParams(-1, -2));
         CheckBox webFromStart = new CheckBox(this); webFromStart.setText(R.string.web_from_start); webFromStart.setTextSize(uiSize(18)); webFromStart.setChecked(p.getBoolean("web_from_start", true)); webFromStart.setPadding(0, dp(6), 0, dp(10)); box.addView(webFromStart, new LinearLayout.LayoutParams(-1, -2));
+        CheckBox closeOnBack = new CheckBox(this); closeOnBack.setText(R.string.close_on_back); closeOnBack.setTextSize(uiSize(18)); closeOnBack.setChecked(p.getBoolean("close_on_back", false)); closeOnBack.setPadding(0, dp(6), 0, dp(10)); box.addView(closeOnBack, new LinearLayout.LayoutParams(-1, -2));
         final int[] previewScale = {originalInterfaceScale}; final boolean[] keepPreview = {false};
         interfaceFont.setOnSeekBarChangeListener(new SeekBar.OnSeekBarChangeListener() {
             public void onStartTrackingTouch(SeekBar seekBar) {} public void onStopTrackingTouch(SeekBar seekBar) {}
@@ -1112,7 +1154,7 @@ public class MainActivity extends Activity implements ReaderService.Listener {
         LinearLayout choices = new LinearLayout(this); choices.setOrientation(LinearLayout.VERTICAL); int savedChoice = p.getInt("sleep_choice", 0);
         for (int m : minutes) { Button option = listRowButton(getResources().getQuantityString(R.plurals.minutes, m, m), 18); option.setTag(m); choices.addView(option, new LinearLayout.LayoutParams(-1, -2)); }
         Button customChoice = listRowButton(getString(R.string.custom_timer), 18); customChoice.setTag(-1); choices.addView(customChoice, new LinearLayout.LayoutParams(-1, -2)); box.addView(choices);
-        LinearLayout customHeader = new LinearLayout(this); customHeader.setGravity(Gravity.CENTER_VERTICAL); TextView customLabel = label(getString(R.string.custom_timer), 18, true); TextView customValue = valueLabel(); customHeader.addView(customLabel, new LinearLayout.LayoutParams(0, -2, 1)); customHeader.addView(customValue, new LinearLayout.LayoutParams(-2, -2)); MinuteSeekBar custom = new MinuteSeekBar(this); custom.setProgress(Math.max(0, Math.min(89, p.getInt("custom_sleep_minutes", 30) - 1)));
+        LinearLayout customHeader = new LinearLayout(this); customHeader.setGravity(Gravity.CENTER_VERTICAL); TextView customLabel = label(getString(R.string.custom_timer), 18, true); TextView customValue = valueLabel(); customHeader.addView(customLabel, new LinearLayout.LayoutParams(0, -2, 1)); customHeader.addView(customValue, new LinearLayout.LayoutParams(-2, -2)); MinuteSeekBar custom = new MinuteSeekBar(this); thicken(custom); custom.setProgress(Math.max(0, Math.min(89, p.getInt("custom_sleep_minutes", 30) - 1)));
         SeekBar.OnSeekBarChangeListener customListener = new SeekBar.OnSeekBarChangeListener() { public void onStartTrackingTouch(SeekBar s) {} public void onStopTrackingTouch(SeekBar s) {} public void onProgressChanged(SeekBar s, int progress, boolean fromUser) { int value = progress + 1; String spoken = getResources().getQuantityString(R.plurals.minutes, value, value); customValue.setText(getString(R.string.minutes_short_value, value)); setSliderValueDescription(custom, spoken); } }; custom.setOnSeekBarChangeListener(customListener); customListener.onProgressChanged(custom, custom.getProgress(), false);
         box.addView(customHeader); box.addView(custom, new LinearLayout.LayoutParams(-1, dp(56))); boolean showCustom = savedChoice == -1; customHeader.setVisibility(showCustom ? View.VISIBLE : View.GONE); custom.setVisibility(showCustom ? View.VISIBLE : View.GONE);
         ScrollView timerScroll = new ScrollView(this); timerScroll.addView(box);
@@ -1144,17 +1186,17 @@ public class MainActivity extends Activity implements ReaderService.Listener {
         if (chosen > 0 && !reader.isPlaying()) { pausedAutomaticallyOutsideReader = false; scheduleAutomaticPlayback(); }
     }
     private SeekBar seek(LinearLayout box, int label, int min, int max, int value) {
-        TextView valueLabel = addSliderHeader(box, label, 18, dp(12)); SeekBar s = new SeekBar(this); s.setTag(new SeekRange(min, max)); s.setMax(20); s.setProgress(Math.round((value - min) * 20f / (max - min))); sliderValues.put(s, valueLabel); updateSliderPercentValue(s); s.setOnSeekBarChangeListener(new SeekBar.OnSeekBarChangeListener() { public void onStartTrackingTouch(SeekBar seekBar) {} public void onStopTrackingTouch(SeekBar seekBar) {} public void onProgressChanged(SeekBar seekBar, int progress, boolean fromUser) { updateSliderPercentValue(seekBar); } }); box.addView(s); return s;
+        TextView valueLabel = addSliderHeader(box, label, 18, dp(12)); SeekBar s = new SeekBar(this); thicken(s); s.setTag(new SeekRange(min, max)); s.setMax(20); s.setProgress(Math.round((value - min) * 20f / (max - min))); sliderValues.put(s, valueLabel); updateSliderPercentValue(s); s.setOnSeekBarChangeListener(new SeekBar.OnSeekBarChangeListener() { public void onStartTrackingTouch(SeekBar seekBar) {} public void onStopTrackingTouch(SeekBar seekBar) {} public void onProgressChanged(SeekBar seekBar, int progress, boolean fromUser) { updateSliderPercentValue(seekBar); } }); box.addView(s); return s;
     }
     private PercentSeekBar percentSeek(LinearLayout box, int label, int value) {
-        TextView valueLabel = addSliderHeader(box, label, 18, dp(12)); PercentSeekBar seek = new PercentSeekBar(this); sliderValues.put(seek, valueLabel); seek.setPercent(Math.round(Math.max(0, Math.min(100, value)) / 5f) * 5); updatePercentValue(seek, seek.percent());
+        TextView valueLabel = addSliderHeader(box, label, 18, dp(12)); PercentSeekBar seek = new PercentSeekBar(this); thicken(seek); sliderValues.put(seek, valueLabel); seek.setPercent(Math.round(Math.max(0, Math.min(100, value)) / 5f) * 5); updatePercentValue(seek, seek.percent());
         seek.setOnSeekBarChangeListener(new SeekBar.OnSeekBarChangeListener() { public void onStartTrackingTouch(SeekBar s) {} public void onStopTrackingTouch(SeekBar s) {} public void onProgressChanged(SeekBar s, int progress, boolean fromUser) { int percent = seek.percent(); int rounded = Math.max(0, Math.min(100, Math.round(percent / 5f) * 5)); if (rounded != percent) seek.setPercent(rounded); else updatePercentValue(seek, rounded); } });
         box.addView(seek); return seek;
     }
     private void setMillisecondsDescription(SeekBar gap) { updateMillisecondsValue(gap); gap.setOnSeekBarChangeListener(new SeekBar.OnSeekBarChangeListener() { public void onStartTrackingTouch(SeekBar s) {} public void onStopTrackingTouch(SeekBar s) {} public void onProgressChanged(SeekBar s, int progress, boolean fromUser) { updateMillisecondsValue(s); } }); }
     private void setSliderValueDescription(SeekBar seek, String value) { if (Build.VERSION.SDK_INT >= 30) { seek.setContentDescription(null); seek.setStateDescription(value); } else seek.setContentDescription(value); }
     private SeekBar millisecondSeek(LinearLayout box, int value) { return millisecondSeek(box, R.string.sentence_pause, 0, 2000, 100, value); }
-    private SeekBar millisecondSeek(LinearLayout box, int labelResource, int min, int max, int step, int value) { TextView valueLabel = addSliderHeader(box, labelResource, 18, dp(12)); SeekBar seek = new SeekBar(this); seek.setTag(new SeekRange(min, max)); seek.setMax((max - min) / step); seek.setProgress(Math.max(0, Math.min(seek.getMax(), Math.round((value - min) / (float)step)))); sliderValues.put(seek, valueLabel); box.addView(seek); setMillisecondsDescription(seek); return seek; }
+    private SeekBar millisecondSeek(LinearLayout box, int labelResource, int min, int max, int step, int value) { TextView valueLabel = addSliderHeader(box, labelResource, 18, dp(12)); SeekBar seek = new SeekBar(this); thicken(seek); seek.setTag(new SeekRange(min, max)); seek.setMax((max - min) / step); seek.setProgress(Math.max(0, Math.min(seek.getMax(), Math.round((value - min) / (float)step)))); sliderValues.put(seek, valueLabel); box.addView(seek); setMillisecondsDescription(seek); return seek; }
     private TextView addSliderHeader(LinearLayout box, int labelResource, int textSize, int topPadding) { LinearLayout row = new LinearLayout(this); row.setGravity(Gravity.CENTER_VERTICAL); row.setPadding(0, topPadding, 0, 0); TextView name = label(getString(labelResource), textSize, true); TextView value = valueLabel(); row.addView(name, new LinearLayout.LayoutParams(0, -2, 1)); row.addView(value, new LinearLayout.LayoutParams(-2, -2)); box.addView(row, new LinearLayout.LayoutParams(-1, -2)); return value; }
     private TextView valueLabel() { TextView value = label("", 18, true); value.setGravity(Gravity.END); value.setFocusable(false); value.setImportantForAccessibility(View.IMPORTANT_FOR_ACCESSIBILITY_NO); return value; }
     private void updatePercentValue(SeekBar seek, int percent) { TextView value = sliderValues.get(seek); if (value != null) value.setText(getString(R.string.percentage_value, percent)); setSliderValueDescription(seek, getString(R.string.percentage_spoken, percent)); }
@@ -1416,6 +1458,17 @@ public class MainActivity extends Activity implements ReaderService.Listener {
     // reading carries on, so a stray press costs nothing and the headset button brings it straight back. The
     // option turns Back into a full stop instead, for someone who would rather have one button that ends
     // everything than a book still talking from a screen they have left.
+    // Home and the app switcher end the app on the same terms as Back, when the option asks for it. This is
+    // the only hook Android gives for "the user chose to leave"; it does not fire when the app itself opens
+    // another screen, but the file picker is guarded anyway, because an app that shuts itself down while the
+    // reader is choosing a book would be a fine way to lose a book.
+    @Override protected void onUserLeaveHint() {
+        super.onUserLeaveHint();
+        if (leavingForResult || showingRecent || loading) return;
+        if (!getSettings().getBoolean("close_on_back", false)) return;
+        if (reader != null) reader.stopEverything();
+        finishAndRemoveTask();
+    }
     private void leaveReader() {
         if (getSettings().getBoolean("close_on_back", false)) {
             if (reader != null) reader.stopEverything();

@@ -1,0 +1,13 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!--
+    The foreground of an adaptive icon lives on a 108 by 108 canvas of which only the middle 72 is certain to
+    be seen: the launcher crops the rest to whatever shape it likes, round on one phone, a squircle on the
+    next. So the page and its sound wave are drawn well inside that middle, and the blue behind them is a
+    separate layer that can be cut about freely.
+-->
+<vector xmlns:android="http://schemas.android.com/apk/res/android"
+    android:width="108dp" android:height="108dp" android:viewportWidth="108" android:viewportHeight="108">
+    <path android:fillColor="#FFFFFF" android:pathData="M34,32h34c4,0 7,3 7,7v30c0,4 -3,7 -7,7h-34z" />
+    <path android:fillColor="#0D47A1" android:pathData="M41,42h27v4.5h-27zM41,52h27v4.5h-27zM41,62h17v4.5h-17z" />
+    <path android:fillColor="#FFCA28" android:pathData="M70,58c7,2.5 7,11 0,13.5z" />
+</vector>

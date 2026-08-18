@@ -5,7 +5,9 @@
     <color name="panel_bg">#000000</color>
     <color name="text_primary">#FFFFFF</color>
     <color name="text_secondary">#D0D0D0</color>
-    <color name="highlight">#005280</color>
-    <color name="button_bg">#64B5F6</color>
-    <color name="button_text">#000000</color>
+    <color name="highlight">#FFD54F</color>
+    <color name="button_bg">#125AAD</color>
+    <color name="button_text">#FFFFFF</color>
+    <color name="slider_track">#3C3C3C</color>
+    <color name="slider_fill">#42A5F5</color>
 </resources>
