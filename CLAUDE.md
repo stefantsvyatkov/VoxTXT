@@ -7,9 +7,24 @@ not say: decisions that look arbitrary from the code, and traps that have alread
 The user writes and expects replies in Bulgarian.
 
 **He uses Jieshuo, not TalkBack.** TalkBack comes out only for the occasional test, so advice that assumes it,
-or fixes aimed at its particular quirks, are aimed at the wrong reader. He also has some remaining sight: he
-makes out the controls but not the text in them, which is why he notices a flickering icon or a button whose
-background does not reach the last line, and why contrast matters more here than fashion does.
+or fixes aimed at its particular quirks, are aimed at the wrong reader.
+
+**He has some sight, and what it does and does not reach decides most of the visual design.** Colours, large
+shapes and the main shades come through. Text does not: it arrives as broken lines, so every word in this app
+reaches him through the screen reader. The drawing inside an icon does not either - Play is a triangle and
+that is as far as it goes; the rest of the player row he knows by position and by what is read out.
+
+Three things follow, and they are worth holding on to:
+
+- **Colour, size, fill and position carry information to him. Text and iconography do not.** The open tab is
+  filled rather than merely bold for this reason, and replacing a written label with a neat icon would be a
+  straight loss.
+- **He is the one who finds the visual faults**, because nobody else is testing. Rows that had turned white on
+  white, a Play button flickering through a seek, a slider whose filled half could not be told from its track
+  - all of those were reported from these eyes and none of them could be seen from the code or heard through
+  the screen reader. Screenshots are worth asking for.
+- **Contrast is not a preference here.** Anything done to make the app look better has to leave it where it is
+  or raise it, and the numbers are worth checking rather than guessing at.
 
 ## Shape of the app
 
