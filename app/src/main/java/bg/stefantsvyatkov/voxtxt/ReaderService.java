@@ -142,7 +142,7 @@ public class ReaderService extends Service implements TextToSpeech.OnInitListene
                 case ACTION_PAUSE: pause(); break;
                 case ACTION_PREVIOUS: move(-1); break;
                 case ACTION_NEXT: move(1); break;
-                case ACTION_STOP: pause(); stopForeground(true); stopSelf(); break;
+                case ACTION_STOP: shutdown(); break;
                 case Intent.ACTION_MEDIA_BUTTON:
                     // Started with startForegroundService(), so startForeground() must follow within a few
                     // seconds even when the button turns out to be a no-op (no document, TTS not ready yet).
@@ -165,9 +165,31 @@ public class ReaderService extends Service implements TextToSpeech.OnInitListene
     // that moment. Closing an app from the very place meant for closing apps should leave nothing behind.
     // The position is saved on the way out, so the book opens again where it was left.
     @Override public void onTaskRemoved(Intent rootIntent) {
-        pause(); stopForeground(true); stopSelf();
+        shutdown();
         super.onTaskRemoved(rootIntent);
     }
+    // One way out, used by Stop and by the app being cleared from Recents, and it has to leave nothing behind.
+    //
+    // Pausing and stopping the service was not enough, and that is where the odd behaviour came from. The book
+    // stayed loaded, so a Play from anywhere - a headset, the notification, the system panel - found something
+    // to read and the app came back from the dead. The media session stayed active, so those buttons went on
+    // being delivered here in the first place. And stopSelf() does not end a service that something is still
+    // bound to, which is why the notification could sit there afterwards looking like a player that no longer
+    // plays. Now the document is dropped, the session is closed, the notification is taken down by name, and
+    // the position has already been saved by the pause above.
+    private void shutdown() {
+        pause();
+        text = ""; uri = ""; title = "Vox TXT"; current = 0; reachedEnd = false; sentences.clear();
+        speechHandler.removeCallbacksAndMessages(null); handler.removeCallbacksAndMessages(null);
+        lifecycleHandler.removeCallbacksAndMessages(null);
+        if (mediaSession != null) mediaSession.setActive(false);
+        stopForeground(true);
+        NotificationManager manager = getSystemService(NotificationManager.class);
+        if (manager != null) manager.cancel(NOTIFICATION_ID);
+        notifyState();
+        stopSelf();
+    }
+    public void stopEverything() { shutdown(); }
 
     public void setListener(Listener value) { listener = value; notifyState(); }
     public String getText() { return text; }
@@ -769,7 +791,7 @@ public class ReaderService extends Service implements TextToSpeech.OnInitListene
         PendingIntent content = PendingIntent.getActivity(this, 0, open, PendingIntent.FLAG_UPDATE_CURRENT | PendingIntent.FLAG_IMMUTABLE);
         String line = sentences.isEmpty() ? "" : getString(playing ? R.string.notification_text : R.string.notification_paused, current + 1, sentences.size());
         Notification.Builder b = new Notification.Builder(this, CHANNEL);
-        b.setSmallIcon(R.drawable.ic_launcher).setContentTitle(title).setContentText(line).setContentIntent(content).setOngoing(playing).setOnlyAlertOnce(true)
+        b.setSmallIcon(R.drawable.ic_notification).setContentTitle(title).setContentText(line).setContentIntent(content).setOngoing(playing).setOnlyAlertOnce(true)
             .addAction(android.R.drawable.ic_media_previous, getString(R.string.previous), command(ACTION_PREVIOUS, 1))
             .addAction(playing ? android.R.drawable.ic_media_pause : android.R.drawable.ic_media_play, getString(playing ? R.string.pause : R.string.read), command(playing ? ACTION_PAUSE : ACTION_PLAY, 2))
             .addAction(android.R.drawable.ic_media_next, getString(R.string.next), command(ACTION_NEXT, 3))

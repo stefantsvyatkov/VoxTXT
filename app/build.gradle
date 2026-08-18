@@ -27,8 +27,8 @@ android {
         applicationId 'bg.stefantsvyatkov.voxtxt'
         minSdk 26
         targetSdk { version = release(37) }
-        versionCode 4
-        versionName '1.0-beta4'
+        versionCode 5
+        versionName '1.0-beta5'
     }
 
     signingConfigs {

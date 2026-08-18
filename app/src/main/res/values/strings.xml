@@ -19,6 +19,9 @@
     <string name="page_failed">The article could not be read from this page</string>
     <string name="no_address_shared">No web address was shared</string>
     <string name="web_page">Web page</string>
+    <string name="copy_text">Copy text</string>
+    <string name="text_copied">Text copied</string>
+    <string name="copy_failed">The text could not be copied</string>
     <string name="save_as_txt">Save as TXT</string>
     <string name="saved_to">Saved to %1$s</string>
     <string name="save_failed">The file could not be saved</string>
@@ -81,6 +84,7 @@
     <string name="unsupported_content">Unsupported content.</string>
     <string name="keep_screen_off">Off</string>
     <string name="keep_screen_both">Documents and web pages</string>
+    <string name="close_on_back">Close the app with the Back button</string>
     <string name="web_from_start">Start a web page from the beginning</string>
     <string name="keep_screen_on">Keep the screen on while reading</string>
     <string name="prevent_device_autoplay">Prevent automatic playback when an audio device connects</string>

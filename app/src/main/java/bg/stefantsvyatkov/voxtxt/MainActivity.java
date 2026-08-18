@@ -70,6 +70,10 @@ public class MainActivity extends Activity implements ReaderService.Listener {
     // text file: a converted book, a web page, a shared passage, or a TXT that arrived inside an archive.
     private String loadedText;
     private boolean fromPlainTextFile, fromWeb;
+    // A page fetched from an address, as opposed to a passage shared from somewhere. Both read with the web
+    // voice, but only the fetched one is worth copying: a shared passage came from a place that already had
+    // it.
+    private boolean fromWebPage;
     private Button previewButton;
     private boolean previewSpeaking;
     private boolean updatingBookProgress, resumeAfterProgressSeek, draggingBookProgress;
@@ -87,7 +91,18 @@ public class MainActivity extends Activity implements ReaderService.Listener {
     }
     private class AccessibleSpinner extends Spinner {
         private boolean selectionFromPopup;
-        AccessibleSpinner(Context context) { super(context); }
+        AccessibleSpinner(Context context) {
+            super(context);
+            // The platform draws a bare arrow at the right and nothing else, so the control reads as a
+            // sentence rather than a field. An outline says where it begins and ends without touching the
+            // contrast of what is written inside it.
+            android.graphics.drawable.GradientDrawable box = new android.graphics.drawable.GradientDrawable();
+            box.setColor(Color.TRANSPARENT);
+            box.setStroke(Math.max(1, dp(1)), appColor(R.color.text_secondary));
+            box.setCornerRadius(dp(10));
+            setBackground(box);
+            setPadding(dp(12), dp(10), dp(12), dp(10));
+        }
         @Override public boolean performClick() { selectionFromPopup = true; return super.performClick(); }
         boolean consumePopupSelection() { boolean value = selectionFromPopup; selectionFromPopup = false; return value; }
     }
@@ -148,7 +163,7 @@ public class MainActivity extends Activity implements ReaderService.Listener {
         applySavedLanguage();
         String selectedTheme = getSharedPreferences("reader_settings", MODE_PRIVATE).getString("theme", "system");
         if ("light".equals(selectedTheme)) setTheme(R.style.AppThemeLight); else if ("dark".equals(selectedTheme)) setTheme(R.style.AppThemeDark);
-        super.onCreate(state); if (Build.VERSION.SDK_INT >= 33) getOnBackInvokedDispatcher().registerOnBackInvokedCallback(android.window.OnBackInvokedDispatcher.PRIORITY_DEFAULT, () -> { if (showingRecent) closeRecent(); else finishAfterTransition(); }); buildUi();
+        super.onCreate(state); if (Build.VERSION.SDK_INT >= 33) getOnBackInvokedDispatcher().registerOnBackInvokedCallback(android.window.OnBackInvokedDispatcher.PRIORITY_DEFAULT, () -> { if (showingRecent) closeRecent(); else if (getSettings().getBoolean("close_on_back", false)) { if (reader != null) reader.stopEverything(); finishAndRemoveTask(); } else finishAfterTransition(); }); buildUi();
         resumeAfterRecreate = state != null && state.getBoolean(STATE_RESUME_AFTER_RECREATE, false);
         bindRequested = bindService(new Intent(this, ReaderService.class), connection, BIND_AUTO_CREATE);
         if (Build.VERSION.SDK_INT >= 33 && checkSelfPermission(Manifest.permission.POST_NOTIFICATIONS) != PackageManager.PERMISSION_GRANTED)
@@ -248,7 +263,15 @@ public class MainActivity extends Activity implements ReaderService.Listener {
         LinearLayout.LayoutParams panelParams = new LinearLayout.LayoutParams(-1, dp(200)); panelParams.setMargins(0, dp(4), 0, dp(4)); root.addView(playerPanel, panelParams); setContentView(root); applyScreenSetting(); updateControls(); if (reader != null) showCurrent(reader.getCurrent(), reader.getCount()); root.requestApplyInsets(); focusHeading(appHeading);
     }
     private TextView label(String value, int sp, boolean bold) { TextView v = new TextView(this); v.setText(value); v.setTextSize(uiSize(sp)); v.setTextColor(appColor(R.color.text_primary)); if (bold) v.setTypeface(v.getTypeface(), android.graphics.Typeface.BOLD); return v; }
-    private Button button(String value) { Button b = new Button(this); b.setText(value); b.setTextSize(uiSize(17)); b.setAllCaps(false); return b; }
+    // The plain grey the platform gives a button is what made the app look like a form. A blue one reads as
+    // something to press without any of the contrast being given up: the lettering stays at nine to one
+    // against its own background in both themes, and the button stands as far from the page behind it.
+    private Button button(String value) {
+        Button b = new Button(this); b.setText(value); b.setTextSize(uiSize(17)); b.setAllCaps(false);
+        b.setBackgroundTintList(android.content.res.ColorStateList.valueOf(appColor(R.color.button_bg)));
+        b.setTextColor(appColor(R.color.button_text));
+        return b;
+    }
     private ImageButton imageButton(int icon, int description) { ImageButton b = new ImageButton(this); b.setImageResource(icon); b.setScaleType(ImageView.ScaleType.CENTER_INSIDE); b.setImageTintList(android.content.res.ColorStateList.valueOf(appColor(R.color.text_primary))); b.setContentDescription(getString(description)); b.setBackgroundTintList(android.content.res.ColorStateList.valueOf(Color.TRANSPARENT)); b.setPadding(dp(7), dp(7), dp(7), dp(7)); return b; }
     private void addPlayerButton(LinearLayout row, ImageButton button) { FrameLayout column = new FrameLayout(this); column.addView(button, new FrameLayout.LayoutParams(dp(56), dp(62), Gravity.CENTER)); row.addView(column, new LinearLayout.LayoutParams(0, dp(64), 1)); }
     private Button compactButton(String value) { Button b = button(value); b.setMinWidth(0); b.setMinimumWidth(0); b.setPadding(dp(12), 0, dp(12), 0); return b; }
@@ -258,7 +281,7 @@ public class MainActivity extends Activity implements ReaderService.Listener {
     }
     private int dp(int value) { return (int)(value * getResources().getDisplayMetrics().density + .5f); }
     private float uiSize(float base) { return base * getSettings().getInt("interface_scale", 100) / 100f; }
-    private int appColor(int resource) { String theme = getSettings().getString("theme", "system"); if ("dark".equals(theme)) { if (resource == R.color.text_secondary) return Color.rgb(208,208,208); if (resource == R.color.highlight) return Color.rgb(0,82,128); return resource == R.color.text_primary || resource == R.color.accent ? Color.WHITE : Color.BLACK; } if ("light".equals(theme)) { if (resource == R.color.text_secondary) return Color.rgb(51,51,51); if (resource == R.color.highlight) return Color.rgb(125,183,232); return resource == R.color.text_primary || resource == R.color.accent ? Color.BLACK : Color.WHITE; } return getColor(resource); }
+    private int appColor(int resource) { String theme = getSettings().getString("theme", "system"); if ("dark".equals(theme)) { if (resource == R.color.text_secondary) return Color.rgb(208,208,208); if (resource == R.color.highlight) return Color.rgb(0,82,128); if (resource == R.color.button_bg) return Color.rgb(100,181,246); if (resource == R.color.button_text) return Color.BLACK; return resource == R.color.text_primary || resource == R.color.accent ? Color.WHITE : Color.BLACK; } if ("light".equals(theme)) { if (resource == R.color.text_secondary) return Color.rgb(51,51,51); if (resource == R.color.highlight) return Color.rgb(125,183,232); if (resource == R.color.button_bg) return Color.rgb(13,71,161); if (resource == R.color.button_text) return Color.WHITE; return resource == R.color.text_primary || resource == R.color.accent ? Color.BLACK : Color.WHITE; } return getColor(resource); }
     private android.content.SharedPreferences getSettings() { return getSharedPreferences("reader_settings", MODE_PRIVATE); }
     // Explicitly named so it no longer depends on the class package the way Activity.getPreferences() does.
     private android.content.SharedPreferences documents() { return getSharedPreferences(DOCUMENT_PREFS, MODE_PRIVATE); }
@@ -306,7 +329,7 @@ public class MainActivity extends Activity implements ReaderService.Listener {
                     .replace("\r\n", "\n").replace('\r', '\n');
                 if (loaded.trim().isEmpty()) throw new IOException(getString(R.string.file_empty));
                 String name = DocumentText.titleOf(kind, bytes, withoutExtension(fileName)); runOnUiThread(() -> {
-                    if (destroyed) return; loadedText = loaded; fromPlainTextFile = plain; fromWeb = false; currentUri = uri.toString(); currentName = name; title.setText(name); title.setVisibility(View.VISIBLE); title.setPadding(0, 0, 0, dp(8)); loading = false;
+                    if (destroyed) return; loadedText = loaded; fromPlainTextFile = plain; fromWeb = false; fromWebPage = false; currentUri = uri.toString(); currentName = name; title.setText(name); title.setVisibility(View.VISIBLE); title.setPadding(0, 0, 0, dp(8)); loading = false;
                     if (remember) documents().edit().putString("last_uri", currentUri).apply();
                     addRecent(DOCUMENTS_LIST, currentUri, currentName); if (reader == null) pendingText = loaded; else finishLoad(loaded);
                 });
@@ -333,7 +356,7 @@ public class MainActivity extends Activity implements ReaderService.Listener {
         // is put aside rather than thrown away: if the page cannot be read, the book that was open goes on
         // being the book that is open, with its name and its Save as TXT.
         String previousUri = currentUri, previousName = currentName, previousText = loadedText;
-        boolean previousPlain = fromPlainTextFile, previousWeb = fromWeb;
+        boolean previousPlain = fromPlainTextFile, previousWeb = fromWeb, previousPage = fromWebPage;
         currentUri = ""; currentName = ""; loadedText = null;
         title.setText(""); title.setVisibility(View.GONE); title.setPadding(0, 0, 0, 0);
         status.setText(R.string.loading_page); updateControls();
@@ -348,10 +371,10 @@ public class MainActivity extends Activity implements ReaderService.Listener {
                     @Override public void onHtml(String html) {
                         io.execute(() -> {
                             ArticleReader.Result rendered = ArticleReader.extract(MainActivity.this, address, html);
-                            runOnUiThread(() -> { if (destroyed) return; if (ArticleReader.isUsable(rendered)) showArticle(rendered, startReading); else articleFailed(previousUri, previousName, previousText, previousPlain, previousWeb); });
+                            runOnUiThread(() -> { if (destroyed) return; if (ArticleReader.isUsable(rendered)) showArticle(rendered, startReading); else articleFailed(previousUri, previousName, previousText, previousPlain, previousWeb, previousPage); });
                         });
                     }
-                    @Override public void onFailure() { if (!destroyed) articleFailed(previousUri, previousName, previousText, previousPlain, previousWeb); }
+                    @Override public void onFailure() { if (!destroyed) articleFailed(previousUri, previousName, previousText, previousPlain, previousWeb, previousPage); }
                 });
             });
         });
@@ -359,7 +382,7 @@ public class MainActivity extends Activity implements ReaderService.Listener {
     private void showArticle(ArticleReader.Result article, boolean startReading) {
         // Remembered under Web pages, by its address. It is not remembered as the file to open next time and
         // it is not a file at all until Save as TXT in More makes it one.
-        loadedText = article.text; fromPlainTextFile = false; fromWeb = true;
+        loadedText = article.text; fromPlainTextFile = false; fromWeb = true; fromWebPage = true;
         currentUri = article.url; currentName = article.title.isEmpty() ? getString(R.string.web_page) : article.title;
         title.setText(currentName); title.setVisibility(View.VISIBLE); title.setPadding(0, 0, 0, dp(8)); loading = false;
         addRecent(PAGES_LIST, currentUri, currentName);
@@ -367,10 +390,10 @@ public class MainActivity extends Activity implements ReaderService.Listener {
         else { finishLoad(article.text); if (startReading) scheduleAutomaticPlayback(); }
         updateControls();
     }
-    private void articleFailed(String previousUri, String previousName, String previousText, boolean previousPlain, boolean previousWeb) {
+    private void articleFailed(String previousUri, String previousName, String previousText, boolean previousPlain, boolean previousWeb, boolean previousPage) {
         loading = false; resumeAfterFilePickerLoad = false;
         currentUri = previousUri; currentName = previousName; loadedText = previousText;
-        fromPlainTextFile = previousPlain; fromWeb = previousWeb;
+        fromPlainTextFile = previousPlain; fromWeb = previousWeb; fromWebPage = previousPage;
         title.setText(currentName); title.setVisibility(currentName.isEmpty() ? View.GONE : View.VISIBLE);
         title.setPadding(0, 0, 0, currentName.isEmpty() ? 0 : dp(8));
         status.setText(R.string.page_failed); toast(getString(R.string.page_failed)); updateControls();
@@ -378,7 +401,7 @@ public class MainActivity extends Activity implements ReaderService.Listener {
     // Text shared without an address in it - a passage copied out of an app, a note. There is nothing to
     // fetch and nothing to strip; it is read as it arrived, and Save as TXT keeps it if it is worth keeping.
     private void showSharedText(String shared) {
-        loadedText = shared; fromPlainTextFile = false; fromWeb = true;
+        loadedText = shared; fromPlainTextFile = false; fromWeb = true; fromWebPage = false;
         currentUri = "shared:" + Integer.toHexString(shared.hashCode()); currentName = getString(R.string.shared_text);
         title.setText(currentName); title.setVisibility(View.VISIBLE); title.setPadding(0, 0, 0, dp(8)); loading = false;
         if (reader == null) { pendingText = shared; resumeAfterFilePickerLoad = true; }
@@ -662,6 +685,7 @@ public class MainActivity extends Activity implements ReaderService.Listener {
         // already a file.
         java.util.List<String> names = new ArrayList<>(); java.util.List<Runnable> actions = new ArrayList<>();
         names.add(getString(R.string.open_url)); actions.add(this::showOpenUrlDialog);
+        if (loadedText != null && fromWebPage) { names.add(getString(R.string.copy_text)); actions.add(this::copyLoadedText); }
         if (loadedText != null && !fromPlainTextFile) { names.add(getString(R.string.save_as_txt)); actions.add(this::saveAsTxt); }
         names.add(getString(R.string.search)); actions.add(this::showSearchDialog);
         if (!fromWeb) { names.add(getString(R.string.bookmarks)); actions.add(this::showBookmarks); }
@@ -781,6 +805,18 @@ public class MainActivity extends Activity implements ReaderService.Listener {
             returnToReaderScreen(); pausedAutomaticallyOutsideReader = false; loadArticle(address, true);
         });
         focusHeading(heading);
+    }
+    // The article on the clipboard, to be pasted wherever the reader wants it. From Android 13 the system
+    // shows its own confirmation of a copy, so saying it again here would be the same news twice.
+    private void copyLoadedText() {
+        if (loadedText == null) { returnToReader(); return; }
+        try {
+            android.content.ClipboardManager clipboard = (android.content.ClipboardManager)getSystemService(CLIPBOARD_SERVICE);
+            if (clipboard == null) throw new IllegalStateException();
+            clipboard.setPrimaryClip(android.content.ClipData.newPlainText(currentName, loadedText));
+            if (Build.VERSION.SDK_INT < 33) toast(getString(R.string.text_copied));
+        } catch (Exception e) { toast(getString(R.string.copy_failed)); }
+        returnToReader();
     }
     private String clipboardText() {
         try {
@@ -936,6 +972,7 @@ public class MainActivity extends Activity implements ReaderService.Listener {
         int keepScreenSaved = Math.max(0, Math.min(KEEP_SCREEN_VALUES.length - 1, indexOf(KEEP_SCREEN_VALUES, p.getString("keep_screen", "off"))));
         keepScreenSpinner.setSelection(keepScreenSaved, false); configureSpinnerAccessibility(keepScreenSpinner, keepScreenNames);
         box.addView(keepScreenSpinner);
+        CheckBox closeOnBack = new CheckBox(this); closeOnBack.setText(R.string.close_on_back); closeOnBack.setTextSize(uiSize(18)); closeOnBack.setChecked(p.getBoolean("close_on_back", false)); closeOnBack.setPadding(0, dp(6), 0, dp(10)); box.addView(closeOnBack, new LinearLayout.LayoutParams(-1, -2));
         CheckBox webFromStart = new CheckBox(this); webFromStart.setText(R.string.web_from_start); webFromStart.setTextSize(uiSize(18)); webFromStart.setChecked(p.getBoolean("web_from_start", true)); webFromStart.setPadding(0, dp(6), 0, dp(10)); box.addView(webFromStart, new LinearLayout.LayoutParams(-1, -2));
         final int[] previewScale = {originalInterfaceScale}; final boolean[] keepPreview = {false};
         interfaceFont.setOnSeekBarChangeListener(new SeekBar.OnSeekBarChangeListener() {
@@ -944,7 +981,7 @@ public class MainActivity extends Activity implements ReaderService.Listener {
         });
         Runnable applyOptions = () -> {
             int fontValue = seekValue(font), interfaceValue = 50 + interfaceFont.getProgress() * 5; String selectedTheme = themeValues[themeSpinner.getSelectedItemPosition()], selectedLanguage = languageValues[languageSpinner.getSelectedItemPosition()]; boolean themeChanged = !selectedTheme.equals(p.getString("theme", "system")), languageChanged = !selectedLanguage.equals(p.getString("language", "system"));
-            p.edit().putInt("font_size", fontValue).putInt("interface_scale", interfaceValue).putInt("fast_seek_interval", seekValue(fastSeekInterval)).putString("theme", selectedTheme).putString("language", selectedLanguage).putBoolean("pause_for_settings", pauseForSettings.isChecked()).putBoolean("seek_vibration", seekVibration.isChecked()).putBoolean("web_from_start", webFromStart.isChecked()).putBoolean("prevent_device_autoplay", preventDeviceAutoplay.isChecked()).putString("keep_screen", KEEP_SCREEN_VALUES[keepScreenSpinner.getSelectedItemPosition()]).apply(); applyScreenSetting(); keepPreview[0] = true; body.setTextSize(fontValue); if (languageChanged) applyLanguage(selectedLanguage); if (themeChanged || languageChanged) { resumeAfterRecreate = pausedAutomaticallyOutsideReader; pausedAutomaticallyOutsideReader = false; subpageCloseAction = null; getWindow().getDecorView().post(this::recreate); } else closeRecent();
+            p.edit().putInt("font_size", fontValue).putInt("interface_scale", interfaceValue).putInt("fast_seek_interval", seekValue(fastSeekInterval)).putString("theme", selectedTheme).putString("language", selectedLanguage).putBoolean("pause_for_settings", pauseForSettings.isChecked()).putBoolean("seek_vibration", seekVibration.isChecked()).putBoolean("web_from_start", webFromStart.isChecked()).putBoolean("close_on_back", closeOnBack.isChecked()).putBoolean("prevent_device_autoplay", preventDeviceAutoplay.isChecked()).putString("keep_screen", KEEP_SCREEN_VALUES[keepScreenSpinner.getSelectedItemPosition()]).apply(); applyScreenSetting(); keepPreview[0] = true; body.setTextSize(fontValue); if (languageChanged) applyLanguage(selectedLanguage); if (themeChanged || languageChanged) { resumeAfterRecreate = pausedAutomaticallyOutsideReader; pausedAutomaticallyOutsideReader = false; subpageCloseAction = null; getWindow().getDecorView().post(this::recreate); } else closeRecent();
         };
         Runnable closeOptions = () -> { if (!keepPreview[0]) previewInterfaceScale(previewScale[0], originalInterfaceScale); };
         showSettingsPage(R.string.settings, box, applyOptions, closeOptions);
@@ -964,6 +1001,13 @@ public class MainActivity extends Activity implements ReaderService.Listener {
             boolean open = i == active;
             tab.setSelected(open);
             tab.setTypeface(tab.getTypeface(), open ? android.graphics.Typeface.BOLD : android.graphics.Typeface.NORMAL);
+            // Both tabs used to be the same grey, so which one was open could only be heard, never seen. The
+            // open one is filled; the other is left as plain lettering on the page, which is also the only
+            // way to keep them apart now that every button is blue.
+            if (!open) {
+                tab.setBackgroundTintList(android.content.res.ColorStateList.valueOf(appColor(R.color.window_bg)));
+                tab.setTextColor(appColor(R.color.text_secondary));
+            }
             if (open) pickedTab = tab;
             else tab.setOnClickListener(v -> { focusPickedTab = true; onPick.accept(index); });
             row.addView(tab, new LinearLayout.LayoutParams(0, -2, 1));
@@ -1317,7 +1361,7 @@ public class MainActivity extends Activity implements ReaderService.Listener {
                 loading = false;
                 if (selected == null) clearCurrentDocument();
                 else if (!selected.uri.equals(currentUri)) {
-                    loadedText = selected.text; fromPlainTextFile = selected.plainTextFile; fromWeb = false;
+                    loadedText = selected.text; fromPlainTextFile = selected.plainTextFile; fromWeb = false; fromWebPage = false;
                     currentUri = selected.uri; currentName = selected.name;
                     documents().edit().putString("last_uri", currentUri).apply();
                     if (reader == null) pendingText = selected.text; else finishLoad(selected.text);
@@ -1362,12 +1406,24 @@ public class MainActivity extends Activity implements ReaderService.Listener {
         } catch (Exception ignored) { return null; }
     }
     private void clearCurrentDocument() {
-        cancelAutomaticResume(true); resumeAfterFilePickerLoad = false; pendingText = null; loadedText = null; fromPlainTextFile = false; fromWeb = false; currentUri = ""; currentName = "";
+        cancelAutomaticResume(true); resumeAfterFilePickerLoad = false; pendingText = null; loadedText = null; fromPlainTextFile = false; fromWeb = false; fromWebPage = false; currentUri = ""; currentName = "";
         documents().edit().remove("last_uri").apply();
         if (reader != null) reader.clearDocument();
     }
     @android.annotation.SuppressLint("GestureBackNavigation")
-    @Override public void onBackPressed() { if (showingRecent) closeRecent(); else super.onBackPressed(); }
+    @Override public void onBackPressed() { if (showingRecent) closeRecent(); else leaveReader(); }
+    // Back out of the reader. By default this behaves like every other player: the app steps aside and the
+    // reading carries on, so a stray press costs nothing and the headset button brings it straight back. The
+    // option turns Back into a full stop instead, for someone who would rather have one button that ends
+    // everything than a book still talking from a screen they have left.
+    private void leaveReader() {
+        if (getSettings().getBoolean("close_on_back", false)) {
+            if (reader != null) reader.stopEverything();
+            finishAndRemoveTask();
+            return;
+        }
+        super.onBackPressed();
+    }
     @Override protected void onSaveInstanceState(Bundle outState) { outState.putBoolean(STATE_RESUME_AFTER_RECREATE, resumeAfterRecreate); super.onSaveInstanceState(outState); }
     private void toast(String value) { Toast.makeText(this, value == null ? getString(R.string.open_failed) : value, Toast.LENGTH_LONG).show(); }
     @Override protected void onDestroy() {

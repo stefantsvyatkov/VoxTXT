@@ -19,6 +19,9 @@
     <string name="page_failed">От тази страница не може да се извлече статия</string>
     <string name="no_address_shared">Не е споделен уеб адрес</string>
     <string name="web_page">Уеб страница</string>
+    <string name="copy_text">Копиране на текста</string>
+    <string name="text_copied">Текстът е копиран</string>
+    <string name="copy_failed">Текстът не можа да бъде копиран</string>
     <string name="save_as_txt">Запазване като TXT</string>
     <string name="saved_to">Запазено в %1$s</string>
     <string name="save_failed">Файлът не можа да бъде запазен</string>
@@ -81,6 +84,7 @@
     <string name="unsupported_content">Съдържанието не се поддържа.</string>
     <string name="keep_screen_off">Изключено</string>
     <string name="keep_screen_both">Документи и уеб страници</string>
+    <string name="close_on_back">Затваряне на приложението с бутона Назад</string>
     <string name="web_from_start">Начало на уеб страница от началото ѝ</string>
     <string name="keep_screen_on">Задържане на екрана включен по време на четене</string>
     <string name="prevent_device_autoplay">Предотвратяване на автоматичното възпроизвеждане при свързване на аудио устройство</string>

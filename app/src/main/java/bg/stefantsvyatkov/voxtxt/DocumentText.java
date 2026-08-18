@@ -137,11 +137,17 @@ final class DocumentText {
         }
     }
 
-    // FB2 is one XML file holding the whole book. Everything worth reading is in its body elements; the body
-    // named "notes" holds the footnotes, which belong at the end of a page and not in the middle of a
-    // sentence being spoken.
+    // FB2 is one XML file holding the whole book. Everything worth reading is in its body elements; a body
+    // named "notes" is not one of them - it holds the texts of the footnotes, gathered at the end of the file
+    // rather than where they are referred to. Read in place they would arrive after the last chapter as a
+    // heap of fragments with nothing around them: "Same, page 45."
+    //
+    // The little numbers that point at those notes are removed as well. They sit tight against the word they
+    // follow, so what reaches the synthesizer is "the tavern1" - and what comes out is the word with a digit
+    // stuck to its end, in the middle of a sentence.
     private static String fromFb2(byte[] bytes) throws IOException {
         Document book = xml(new String(bytes, charsetOfXml(bytes)));
+        book.select("a[type=note], a[type=comment]").remove();
         StringBuilder text = new StringBuilder();
         for (Element body : book.select("body")) {
             if ("notes".equalsIgnoreCase(body.attr("name"))) continue;
@@ -180,6 +186,12 @@ final class DocumentText {
             if (chapter == null) continue;
             Document page = Jsoup.parse(new String(chapter, StandardCharsets.UTF_8));
             page.select("script, style, nav, svg").remove();
+            // The same little numbers, under the names EPUB gives them. The note itself is left alone here:
+            // in an EPUB it is usually a chapter the book declares like any other, and dropping a declared
+            // chapter would be deciding what is worth reading.
+            for (Element link : page.select("a"))
+                if ("noteref".equalsIgnoreCase(link.attr("epub:type")) || "doc-noteref".equalsIgnoreCase(link.attr("role")))
+                    link.remove();
             if (page.body() != null) append(text, ArticleReader.plainText(page.body()));
         }
         if (text.length() == 0) throw new IOException("empty epub");

@@ -6,4 +6,6 @@
     <color name="text_primary">#000000</color>
     <color name="text_secondary">#333333</color>
     <color name="highlight">#7DB7E8</color>
+    <color name="button_bg">#0D47A1</color>
+    <color name="button_text">#FFFFFF</color>
 </resources>
