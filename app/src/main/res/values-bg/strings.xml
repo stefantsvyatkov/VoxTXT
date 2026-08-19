@@ -116,4 +116,7 @@
     <string name="notification_paused">Пауза на изречение %1$d от %2$d</string>
     <string name="playback_channel">Четене на TXT</string>
     <string name="default_voice">Системен глас</string>
+    <string name="log_events">Записвай дневник на възпроизвеждането</string>
+    <string name="share_log">Споделяне на дневника</string>
+    <string name="log_empty">Още няма записано нищо. Дневникът се пише в %1$s.</string>
 </resources>

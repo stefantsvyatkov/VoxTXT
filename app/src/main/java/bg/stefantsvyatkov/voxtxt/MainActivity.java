@@ -167,7 +167,7 @@ public class MainActivity extends Activity implements ReaderService.Listener {
         applySavedLanguage();
         String selectedTheme = getSharedPreferences("reader_settings", MODE_PRIVATE).getString("theme", "system");
         if ("light".equals(selectedTheme)) setTheme(R.style.AppThemeLight); else if ("dark".equals(selectedTheme)) setTheme(R.style.AppThemeDark);
-        super.onCreate(state); if (Build.VERSION.SDK_INT >= 33) getOnBackInvokedDispatcher().registerOnBackInvokedCallback(android.window.OnBackInvokedDispatcher.PRIORITY_DEFAULT, () -> { if (showingRecent) closeRecent(); else if (getSettings().getBoolean("close_on_back", false)) { if (reader != null) reader.stopEverything(); finishAndRemoveTask(); } else finishAfterTransition(); }); buildUi();
+        super.onCreate(state); if (Build.VERSION.SDK_INT >= 33) getOnBackInvokedDispatcher().registerOnBackInvokedCallback(android.window.OnBackInvokedDispatcher.PRIORITY_DEFAULT, () -> { if (showingRecent) closeRecent(); else leaveReader(); }); buildUi();
         resumeAfterRecreate = state != null && state.getBoolean(STATE_RESUME_AFTER_RECREATE, false);
         bindRequested = bindService(new Intent(this, ReaderService.class), connection, BIND_AUTO_CREATE);
         if (Build.VERSION.SDK_INT >= 33 && checkSelfPermission(Manifest.permission.POST_NOTIFICATIONS) != PackageManager.PERMISSION_GRANTED)
@@ -728,6 +728,7 @@ public class MainActivity extends Activity implements ReaderService.Listener {
         if (!fromWeb) { names.add(getString(R.string.bookmarks)); actions.add(this::showBookmarks); }
         names.add(getString(R.string.settings)); actions.add(this::showSettings);
         names.add(getString(R.string.credits)); actions.add(this::showCredits);
+        if (getSettings().getBoolean("log_events", true)) { names.add(getString(R.string.share_log)); actions.add(this::shareLog); }
         final boolean[] chosen = {false};
         AlertDialog dialog = new AlertDialog.Builder(this).setTitle(R.string.more).setItems(names.toArray(new String[0]), (d, which) -> {
             chosen[0] = true; actions.get(which).run();
@@ -922,6 +923,23 @@ public class MainActivity extends Activity implements ReaderService.Listener {
         try (OutputStream out = new java.io.FileOutputStream(target)) { out.write(bytes); }
         return android.os.Environment.DIRECTORY_DOWNLOADS + "/" + folder + "/" + fileName;
     }
+    // The log is meant to travel. A tester who cannot see the screen should not have to hunt for a file in
+    // Downloads and attach it by hand, so one press hands it straight to the share sheet.
+    private void shareLog() {
+        Uri file = PlaybackLog.fileUri(this);
+        if (file == null) { toast(getString(R.string.log_empty, PlaybackLog.filePath(this))); returnToReader(); return; }
+        Intent send = new Intent(Intent.ACTION_SEND).setType("text/plain")
+            .putExtra(Intent.EXTRA_STREAM, file)
+            .putExtra(Intent.EXTRA_SUBJECT, getString(R.string.share_log))
+            .addFlags(Intent.FLAG_GRANT_READ_URI_PERMISSION);
+        // Marked as a trip out of the app on purpose: without it, leaving for the share sheet would look
+        // like the reader walking away and would shut the app down under the chooser.
+        leavingForResult = true;
+        try { startActivity(Intent.createChooser(send, getString(R.string.share_log))); }
+        catch (Exception e) { leavingForResult = false; toast(getString(R.string.log_empty, PlaybackLog.filePath(this))); returnToReader(); }
+    }
+    @Override protected void onResume() { super.onResume(); leavingForResult = false; }
+
     // Characters a file name cannot hold, and a length a file name should not have.
     private String safeFileName(String name) {
         String cleaned = (name == null ? "" : name).replaceAll("[\\\\/:*?\"<>|\\r\\n\\t]", " ").replaceAll("\\s+", " ").trim();
@@ -1016,6 +1034,9 @@ public class MainActivity extends Activity implements ReaderService.Listener {
         box.addView(keepScreenSpinner);
         CheckBox webFromStart = new CheckBox(this); webFromStart.setText(R.string.web_from_start); webFromStart.setTextSize(uiSize(18)); webFromStart.setChecked(p.getBoolean("web_from_start", true)); webFromStart.setPadding(0, dp(6), 0, dp(10)); box.addView(webFromStart, new LinearLayout.LayoutParams(-1, -2));
         CheckBox closeOnBack = new CheckBox(this); closeOnBack.setText(R.string.close_on_back); closeOnBack.setTextSize(uiSize(18)); closeOnBack.setChecked(p.getBoolean("close_on_back", false)); closeOnBack.setPadding(0, dp(6), 0, dp(10)); box.addView(closeOnBack, new LinearLayout.LayoutParams(-1, -2));
+        // Last, and on while the player is being tested, so a report comes with its own record rather than
+        // with a request to switch something on first. It writes what the player did, never what the book says.
+        CheckBox logEvents = new CheckBox(this); logEvents.setText(R.string.log_events); logEvents.setTextSize(uiSize(18)); logEvents.setChecked(p.getBoolean("log_events", true)); logEvents.setPadding(0, dp(6), 0, dp(10)); box.addView(logEvents, new LinearLayout.LayoutParams(-1, -2));
         final int[] previewScale = {originalInterfaceScale}; final boolean[] keepPreview = {false};
         interfaceFont.setOnSeekBarChangeListener(new SeekBar.OnSeekBarChangeListener() {
             public void onStartTrackingTouch(SeekBar seekBar) {} public void onStopTrackingTouch(SeekBar seekBar) {}
@@ -1023,7 +1044,7 @@ public class MainActivity extends Activity implements ReaderService.Listener {
         });
         Runnable applyOptions = () -> {
             int fontValue = seekValue(font), interfaceValue = 50 + interfaceFont.getProgress() * 5; String selectedTheme = themeValues[themeSpinner.getSelectedItemPosition()], selectedLanguage = languageValues[languageSpinner.getSelectedItemPosition()]; boolean themeChanged = !selectedTheme.equals(p.getString("theme", "system")), languageChanged = !selectedLanguage.equals(p.getString("language", "system"));
-            p.edit().putInt("font_size", fontValue).putInt("interface_scale", interfaceValue).putInt("fast_seek_interval", seekValue(fastSeekInterval)).putString("theme", selectedTheme).putString("language", selectedLanguage).putBoolean("pause_for_settings", pauseForSettings.isChecked()).putBoolean("seek_vibration", seekVibration.isChecked()).putBoolean("web_from_start", webFromStart.isChecked()).putBoolean("close_on_back", closeOnBack.isChecked()).putBoolean("prevent_device_autoplay", preventDeviceAutoplay.isChecked()).putString("keep_screen", KEEP_SCREEN_VALUES[keepScreenSpinner.getSelectedItemPosition()]).apply(); applyScreenSetting(); keepPreview[0] = true; body.setTextSize(fontValue); if (languageChanged) applyLanguage(selectedLanguage); if (themeChanged || languageChanged) { resumeAfterRecreate = pausedAutomaticallyOutsideReader; pausedAutomaticallyOutsideReader = false; subpageCloseAction = null; getWindow().getDecorView().post(this::recreate); } else closeRecent();
+            p.edit().putInt("font_size", fontValue).putInt("interface_scale", interfaceValue).putInt("fast_seek_interval", seekValue(fastSeekInterval)).putString("theme", selectedTheme).putString("language", selectedLanguage).putBoolean("pause_for_settings", pauseForSettings.isChecked()).putBoolean("seek_vibration", seekVibration.isChecked()).putBoolean("web_from_start", webFromStart.isChecked()).putBoolean("close_on_back", closeOnBack.isChecked()).putBoolean("log_events", logEvents.isChecked()).putBoolean("prevent_device_autoplay", preventDeviceAutoplay.isChecked()).putString("keep_screen", KEEP_SCREEN_VALUES[keepScreenSpinner.getSelectedItemPosition()]).apply(); applyScreenSetting(); PlaybackLog.forget(); keepPreview[0] = true; body.setTextSize(fontValue); if (languageChanged) applyLanguage(selectedLanguage); if (themeChanged || languageChanged) { resumeAfterRecreate = pausedAutomaticallyOutsideReader; pausedAutomaticallyOutsideReader = false; subpageCloseAction = null; keepReadingAfterFinish = true; getWindow().getDecorView().post(this::recreate); } else closeRecent();
         };
         Runnable closeOptions = () -> { if (!keepPreview[0]) previewInterfaceScale(previewScale[0], originalInterfaceScale); };
         showSettingsPage(R.string.settings, box, applyOptions, closeOptions);
@@ -1464,22 +1485,57 @@ public class MainActivity extends Activity implements ReaderService.Listener {
     // reader is choosing a book would be a fine way to lose a book.
     @Override protected void onUserLeaveHint() {
         super.onUserLeaveHint();
+        PlaybackLog.event(this, "user left the app, close_on_back=" + getSettings().getBoolean("close_on_back", false)
+            + " forResult=" + leavingForResult + " subpage=" + showingRecent + " loading=" + loading);
         if (leavingForResult || showingRecent || loading) return;
         if (!getSettings().getBoolean("close_on_back", false)) return;
-        if (reader != null) reader.stopEverything();
-        finishAndRemoveTask();
+        endEverything("left the app");
     }
     private void leaveReader() {
-        if (getSettings().getBoolean("close_on_back", false)) {
-            if (reader != null) reader.stopEverything();
-            finishAndRemoveTask();
-            return;
-        }
-        super.onBackPressed();
+        if (getSettings().getBoolean("close_on_back", false)) { endEverything("back"); return; }
+        // Back steps the app aside; it deliberately does not end the screen.
+        //
+        // Finishing it was the quiet fault behind a book that went on reading after the app had been cleared
+        // away. What was left in Recents was a task with a reading service behind it and no screen at all -
+        // and with no screen there is nothing left to notice a later Clear from Recents. The only thing that
+        // could have noticed is a callback the system does not promise to send. Kept alive and merely put
+        // behind, the screen is still there to see the task go, and to take the reading with it.
+        PlaybackLog.event(this, "back, the app steps aside and the reading carries on");
+        moveTaskToBack(true);
     }
+    // The one place the app ends itself, so Back, Home and the app switcher all leave the same nothing
+    // behind. The service is told first, while it can still be reached; then the binding is given up,
+    // because a service that something is still bound to cannot be destroyed and the binding is the last
+    // thing holding it; only then does the activity go.
+    private void endEverything(String reason) {
+        PlaybackLog.event(this, "closing the app (" + reason + ")");
+        keepReadingAfterFinish = false;
+        if (reader != null) reader.stopEverything(reason);
+        releaseBinding();
+        finishAndRemoveTask();
+    }
+    private void releaseBinding() {
+        if (!bindRequested) return;
+        bindRequested = false;
+        if (reader != null) reader.setListener(null);
+        try { unbindService(connection); } catch (IllegalArgumentException ignored) {}
+        reader = null; bound = false;
+    }
+    // Set before the screen is rebuilt for a theme or a language, so that the check in onDestroy cannot
+    // mistake a rebuild for the app being cleared out of Recents. Back no longer needs it: it leaves the
+    // screen standing rather than ending it.
+    private boolean keepReadingAfterFinish;
     @Override protected void onSaveInstanceState(Bundle outState) { outState.putBoolean(STATE_RESUME_AFTER_RECREATE, resumeAfterRecreate); super.onSaveInstanceState(outState); }
     private void toast(String value) { Toast.makeText(this, value == null ? getString(R.string.open_failed) : value, Toast.LENGTH_LONG).show(); }
     @Override protected void onDestroy() {
+        // Cleared out of Recents. onTaskRemoved in the service is the proper signal for that and usually
+        // arrives, but it is not delivered on every phone, so the activity checks for itself. A finish that
+        // is only the app being rebuilt for a theme change, or a Back that is meant to leave the reading
+        // running, must not end anything.
+        boolean cleared = isFinishing() && !isChangingConfigurations() && !keepReadingAfterFinish;
+        PlaybackLog.event(this, "activity destroyed, finishing=" + isFinishing()
+            + " changingConfig=" + isChangingConfigurations() + " keepReading=" + keepReadingAfterFinish);
+        if (cleared && reader != null) reader.stopEverything("cleared from recents");
         destroyed = true; stopFastSeek(false); automaticResumeHandler.removeCallbacksAndMessages(null); seekHandler.removeCallbacksAndMessages(null); previewHandler.removeCallbacksAndMessages(null); sleepRowHandler.removeCallbacksAndMessages(null);
         if (reader != null) reader.setListener(null);
         if (bindRequested) { bindRequested = false; try { unbindService(connection); } catch (IllegalArgumentException ignored) {} }

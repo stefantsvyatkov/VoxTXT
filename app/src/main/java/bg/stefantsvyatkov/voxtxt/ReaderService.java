@@ -26,6 +26,10 @@ public class ReaderService extends Service implements TextToSpeech.OnInitListene
     private static final String END_UTTERANCE = "end-of-text";
     private static final long PREVIEW_RETRY_MS = 700L;
     private static final String PARAM_VOICE_NAME = "voiceName";
+    // Whether a media key means anything to this app. Read by MediaButtonReceiver before it starts anything
+    // at all, so a phone that still remembers Vox TXT as the last player gets silence out of it once the
+    // book is gone. Kept in settings rather than in memory, because the receiver runs when nothing else does.
+    public static final String ARMED = "player_armed";
 
     public interface Listener { void onPlaybackState(int index, int count, boolean playing); void onPlaybackError(String message); void onPreviewState(boolean speaking); }
     public class ReaderBinder extends Binder {
@@ -126,23 +130,25 @@ public class ReaderService extends Service implements TextToSpeech.OnInitListene
     // else. The focus request itself is kept during a short loss; abandoning it would mean never hearing
     // that the sound came back.
     private final AudioManager.OnAudioFocusChangeListener focusListener = change -> {
+        PlaybackLog.event(this, "audio focus change " + change);
         if (change == AudioManager.AUDIOFOCUS_LOSS) { pause(); return; }
         if (change == AudioManager.AUDIOFOCUS_LOSS_TRANSIENT) { boolean wasPlaying = playing; pause(false); pausedByFocusLoss = wasPlaying; return; }
         if (change == AudioManager.AUDIOFOCUS_GAIN && pausedByFocusLoss) { pausedByFocusLoss = false; play(); }
     };
 
     @Override public void onCreate() {
-        super.onCreate(); restoreSleepRewindState(); createChannel(); createMediaSession(); restoreVolumeAfterCrash(); registerAudioRouteListeners(); initializeTts(getSharedPreferences("reader_settings", MODE_PRIVATE).getString("engine", ""));
+        super.onCreate(); PlaybackLog.event(this, "service created"); restoreSleepRewindState(); createChannel(); createMediaSession(); restoreVolumeAfterCrash(); registerAudioRouteListeners(); initializeTts(getSharedPreferences("reader_settings", MODE_PRIVATE).getString("engine", ""));
     }
     @Override public IBinder onBind(Intent intent) { return binder; }
     @Override public int onStartCommand(Intent intent, int flags, int startId) {
         if (intent != null && intent.getAction() != null) {
+            PlaybackLog.event(this, "command " + intent.getAction());
             switch (intent.getAction()) {
                 case ACTION_PLAY: play(); break;
                 case ACTION_PAUSE: pause(); break;
                 case ACTION_PREVIOUS: move(-1); break;
                 case ACTION_NEXT: move(1); break;
-                case ACTION_STOP: shutdown(); break;
+                case ACTION_STOP: shutdown("stop action"); break;
                 case Intent.ACTION_MEDIA_BUTTON:
                     // Started with startForegroundService(), so startForeground() must follow within a few
                     // seconds even when the button turns out to be a no-op (no document, TTS not ready yet).
@@ -158,38 +164,60 @@ public class ReaderService extends Service implements TextToSpeech.OnInitListene
     }
     private void stopIfIdle() {
         if (playing || pendingPlay || !sentences.isEmpty()) return;
-        stopForeground(true); stopSelf();
+        PlaybackLog.event(this, "idle after a media key, stopping");
+        stopForeground(STOP_FOREGROUND_REMOVE); stopSelf();
     }
     // Swiping the app away, or Close all in Recents, is a request to be rid of it, and it is taken literally:
     // the reading stops, the notification disappears and the service ends, whether or not it was reading at
     // that moment. Closing an app from the very place meant for closing apps should leave nothing behind.
     // The position is saved on the way out, so the book opens again where it was left.
     @Override public void onTaskRemoved(Intent rootIntent) {
-        shutdown();
+        PlaybackLog.event(this, "onTaskRemoved");
+        shutdown("task removed");
         super.onTaskRemoved(rootIntent);
     }
-    // One way out, used by Stop and by the app being cleared from Recents, and it has to leave nothing behind.
+    // One way out, used by Stop, by Back when the option asks for it, and by the app being cleared from
+    // Recents. It has to leave nothing behind that the system can see or route a button to.
     //
-    // Pausing and stopping the service was not enough, and that is where the odd behaviour came from. The book
-    // stayed loaded, so a Play from anywhere - a headset, the notification, the system panel - found something
-    // to read and the app came back from the dead. The media session stayed active, so those buttons went on
-    // being delivered here in the first place. And stopSelf() does not end a service that something is still
-    // bound to, which is why the notification could sit there afterwards looking like a player that no longer
-    // plays. Now the document is dropped, the session is closed, the notification is taken down by name, and
-    // the position has already been saved by the pause above.
-    private void shutdown() {
+    // The order matters and every step of it was paid for. The reading stops first, while the session is
+    // still alive, so the screen and the saved position settle. The player is then disarmed, so no media key
+    // can wake it. The session is released rather than merely deactivated - a deactivated session stays
+    // registered with the system, and that is what answered a Play with the app's own name and no book. The
+    // notification goes with the foreground state, and is cancelled by name as well.
+    //
+    // stopSelf() comes last and is deliberately not relied upon: a service that something is still bound to
+    // does not die when it is told to, and the screen is usually still bound at this moment. By then it no
+    // longer matters. What is left is an object with no session, no notification, no document and no way in,
+    // and it goes when the screen unbinds.
+    private void shutdown(String reason) {
+        PlaybackLog.event(this, "shutdown (" + reason + ")");
         pause();
+        setArmed(false);
         text = ""; uri = ""; title = "Vox TXT"; current = 0; reachedEnd = false; sentences.clear();
         speechHandler.removeCallbacksAndMessages(null); handler.removeCallbacksAndMessages(null);
         lifecycleHandler.removeCallbacksAndMessages(null);
-        if (mediaSession != null) mediaSession.setActive(false);
-        stopForeground(true);
+        // The screen is told directly. notifyState() would go through the session, which is about to stop
+        // existing, and touching it after that is what used to put the player back on the phone.
+        if (listener != null) listener.onPlaybackState(0, 0, false);
+        releaseMediaSession();
+        stopForeground(STOP_FOREGROUND_REMOVE);
         NotificationManager manager = getSystemService(NotificationManager.class);
         if (manager != null) manager.cancel(NOTIFICATION_ID);
-        notifyState();
         stopSelf();
     }
-    public void stopEverything() { shutdown(); }
+    public void stopEverything(String reason) { shutdown(reason); }
+    // A released session cannot be woken, cannot be routed to, and does not appear in the phone's list of
+    // players. Deactivating one only mutes it.
+    private void releaseMediaSession() {
+        MediaSession session = mediaSession; mediaSession = null;
+        if (session == null) return;
+        try { session.setActive(false); session.release(); } catch (Exception ignored) {}
+        PlaybackLog.event(this, "media session released");
+    }
+    private void setArmed(boolean armed) {
+        getSharedPreferences("reader_settings", MODE_PRIVATE).edit().putBoolean(ARMED, armed).apply();
+        PlaybackLog.event(this, "player armed=" + armed);
+    }
 
     public void setListener(Listener value) { listener = value; notifyState(); }
     public String getText() { return text; }
@@ -218,6 +246,10 @@ public class ReaderService extends Service implements TextToSpeech.OnInitListene
     // is decided by what was opened, and is switched here rather than being asked for every sentence.
     public void load(String newUri, String newTitle, String newText, int position, boolean fromWeb) {
         pause(); reachedEnd = false; uri = newUri; title = newTitle; text = newText; current = Math.max(0, position);
+        // A shutdown released the session; opening a book is what brings it back, together with the right to
+        // answer a media key.
+        if (mediaSession == null) createMediaSession();
+        setArmed(true);
         useProfile(fromWeb ? WEB_PROFILE : "");
         if (sleepRewindAvailable && !newUri.equals(getSharedPreferences(SLEEP_STATE, MODE_PRIVATE).getString("uri", ""))) clearSleepRewindState();
         split(); current = Math.min(current, Math.max(0, sentences.size() - 1));
@@ -225,12 +257,13 @@ public class ReaderService extends Service implements TextToSpeech.OnInitListene
     }
     public void clearDocument() {
         pause(); reachedEnd = false; uri = ""; title = ""; text = ""; current = 0; sentences.clear();
-        notifyState(); stopForeground(true);
+        setArmed(false);
+        notifyState(); stopForeground(STOP_FOREGROUND_REMOVE);
     }
     public void play() {
         if (sleepRewindAvailable) { clearSleepRewindState(); notifyState(); }
         if (!ready) { pendingPlay = true; return; }
-        if (sentences.isEmpty()) return;
+        if (sentences.isEmpty()) { PlaybackLog.event(this, "play ignored, no document"); return; }
         // The last sentence has already been read out; playing again would simply repeat it.
         if (reachedEnd) { error(getString(R.string.no_more_text)); return; }
         if (captureSleepStartOnPlay) { sleepStartSentence = current; captureSleepStartOnPlay = false; }
@@ -240,11 +273,13 @@ public class ReaderService extends Service implements TextToSpeech.OnInitListene
         speechHandler.removeCallbacksAndMessages(null);
         applySettings(); transientRetries = 0; engineRestarts = 0; pausedByFocusLoss = false; playing = true;
         if (!requestAudioFocus()) { playing = false; notifyState(); updateNotification(); return; }
+        PlaybackLog.event(this, "play from sentence " + current + " of " + sentences.size());
         startSilentPlayback(); promoteMediaSession(); updateMediaSession(); startService(new Intent(this, ReaderService.class)); startForeground(NOTIFICATION_ID, notification());
         speakCurrent();
     }
     public void pause() { pausedByFocusLoss = false; pause(true); }
     private void pause(boolean releaseFocus) {
+        if (playing) PlaybackLog.event(this, "pause at sentence " + current);
         pendingPlay = false; playing = false; activeUtterance = ""; utteranceSerial++; speechHandler.removeCallbacksAndMessages(null); if (tts != null) tts.stop(); stopSilentPlayback();
         restoreVolumeAfterFade(); if (releaseFocus) abandonAudioFocus(); savePosition(); if (!sentences.isEmpty()) updateNotification(); notifyState();
     }
@@ -587,6 +622,7 @@ public class ReaderService extends Service implements TextToSpeech.OnInitListene
 
     @Override public void onInit(int status) {
         ready = status == TextToSpeech.SUCCESS;
+        PlaybackLog.event(this, "tts ready=" + ready + " engine=" + (activeEngine.isEmpty() ? "system default" : activeEngine));
         if (!ready) { pendingPlay = false; error(getString(R.string.tts_unavailable)); notifyState(); stopIfIdle(); return; }
         applySettings(); refreshEngines();
         tts.setAudioAttributes(new AudioAttributes.Builder().setUsage(AudioAttributes.USAGE_MEDIA).setContentType(AudioAttributes.CONTENT_TYPE_SPEECH).build());
@@ -794,12 +830,16 @@ public class ReaderService extends Service implements TextToSpeech.OnInitListene
         b.setSmallIcon(R.drawable.ic_notification).setContentTitle(title).setContentText(line).setContentIntent(content).setOngoing(playing).setOnlyAlertOnce(true)
             .addAction(android.R.drawable.ic_media_previous, getString(R.string.previous), command(ACTION_PREVIOUS, 1))
             .addAction(playing ? android.R.drawable.ic_media_pause : android.R.drawable.ic_media_play, getString(playing ? R.string.pause : R.string.read), command(playing ? ACTION_PAUSE : ACTION_PLAY, 2))
-            .addAction(android.R.drawable.ic_media_next, getString(R.string.next), command(ACTION_NEXT, 3))
-            .setStyle(new Notification.MediaStyle().setMediaSession(mediaSession.getSessionToken()).setShowActionsInCompactView(0, 1, 2));
+            .addAction(android.R.drawable.ic_media_next, getString(R.string.next), command(ACTION_NEXT, 3));
+        // The session may already be gone - the app can be shutting down while a last notification is being
+        // built - and asking a released session for its token is a crash.
+        Notification.MediaStyle style = new Notification.MediaStyle().setShowActionsInCompactView(0, 1, 2);
+        if (mediaSession != null) style.setMediaSession(mediaSession.getSessionToken());
+        b.setStyle(style);
         return b.build();
     }
     private void updateNotification() { if (!sentences.isEmpty()) ((NotificationManager)getSystemService(NOTIFICATION_SERVICE)).notify(NOTIFICATION_ID, notification()); }
-    @Override public void onDestroy() { speechHandler.removeCallbacksAndMessages(null); handler.removeCallbacksAndMessages(null); sleepHandler.removeCallbacksAndMessages(null); lifecycleHandler.removeCallbacksAndMessages(null); pause(); stopPreview(); flushVolumeRestore(); stopSilentPlayback(); if (audioManager != null) audioManager.unregisterAudioDeviceCallback(audioDeviceCallback); try { unregisterReceiver(becomingNoisyReceiver); } catch (IllegalArgumentException ignored) {} if (mediaSession != null) mediaSession.release(); if (tts != null) tts.shutdown(); super.onDestroy(); }
+    @Override public void onDestroy() { PlaybackLog.event(this, "service destroyed"); setArmed(false); speechHandler.removeCallbacksAndMessages(null); handler.removeCallbacksAndMessages(null); sleepHandler.removeCallbacksAndMessages(null); lifecycleHandler.removeCallbacksAndMessages(null); pause(); stopPreview(); flushVolumeRestore(); stopSilentPlayback(); if (audioManager != null) audioManager.unregisterAudioDeviceCallback(audioDeviceCallback); try { unregisterReceiver(becomingNoisyReceiver); } catch (IllegalArgumentException ignored) {} if (mediaSession != null) mediaSession.release(); if (tts != null) tts.shutdown(); super.onDestroy(); }
 
     public static class Range { public final int start, end; Range(int start, int end) { this.start = start; this.end = end; } }
 }
