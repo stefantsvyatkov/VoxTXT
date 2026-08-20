@@ -957,8 +957,6 @@ public class MainActivity extends Activity implements ReaderService.Listener {
         try (OutputStream out = new java.io.FileOutputStream(target)) { out.write(bytes); }
         return android.os.Environment.DIRECTORY_DOWNLOADS + "/" + folder + "/" + fileName;
     }
-    // The log is meant to travel. A tester who cannot see the screen should not have to hunt for a file in
-    // Downloads and attach it by hand, so one press hands it straight to the share sheet.
     // Left from the days when Share the log lived here: the file picker sets this flag too, and a stale
     // one would make the app shut itself down under a chooser. Cheap, and it guards a path that was hard won.
     @Override protected void onResume() { super.onResume(); leavingForResult = false; }
@@ -1334,9 +1332,6 @@ public class MainActivity extends Activity implements ReaderService.Listener {
     // engine, voice, rate, pitch, volume, gap - as last seen in each tab of the voice page.
     private final Map<String, String[]> pendingVoice = new HashMap<>();
     private String recentTab = DOCUMENTS_LIST;
-    // Picking a tab rebuilds the page. Sending the screen reader back to the heading afterwards would make
-    // every switch a trip back to the top; the finger is on the tab, so that is where the focus belongs and
-    // what it should say is the name of the tab and that it is selected.
     // Where the screen reader should land after a list has been rebuilt. Removing an entry leaves the
     // reader at the place the entry stood, on whatever moved up into it, rather than sending it back to the
     // heading and making it walk down the whole list again.
@@ -1589,10 +1584,6 @@ public class MainActivity extends Activity implements ReaderService.Listener {
     }
     @android.annotation.SuppressLint("GestureBackNavigation")
     @Override public void onBackPressed() { if (showingRecent) closeRecent(); else leaveReader(); }
-    // Back out of the reader. By default this behaves like every other player: the app steps aside and the
-    // reading carries on, so a stray press costs nothing and the headset button brings it straight back. The
-    // option turns Back into a full stop instead, for someone who would rather have one button that ends
-    // everything than a book still talking from a screen they have left.
     // Home and the app switcher end the app on the same terms as Back, when the option asks for it. This is
     // the only hook Android gives for "the user chose to leave"; it does not fire when the app itself opens
     // another screen, but the file picker is guarded anyway, because an app that shuts itself down while the
@@ -1603,6 +1594,10 @@ public class MainActivity extends Activity implements ReaderService.Listener {
         if (!getSettings().getBoolean("close_on_back", false)) return;
         endEverything();
     }
+    // Back out of the reader. By default this behaves like every other player: the app steps aside and the
+    // reading carries on, so a stray press costs nothing and the headset button brings it straight back. The
+    // option turns Back into a full stop instead, for someone who would rather have one button that ends
+    // everything than a book still talking from a screen they have left.
     private void leaveReader() {
         if (getSettings().getBoolean("close_on_back", false)) { endEverything(); return; }
         // Back steps the app aside; it deliberately does not end the screen.
