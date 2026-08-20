@@ -26,6 +26,14 @@ Three things follow, and they are worth holding on to:
 - **Contrast is not a preference here.** Anything done to make the app look better has to leave it where it is
   or raise it, and the numbers are worth checking rather than guessing at.
 
+## Writing things down, briefly
+
+**Commit messages and changelog entries are short.** A commit body is at most five sentences; a changelog
+entry is one sentence, two at the outside, and the published Beta 3 notes are the measure of it. Reasoning,
+history and what was weighed against what belong in this file and in the two documents above - that is what
+they are for. He reads every line through a screen reader, and an essay where he expected a sentence is not
+thoroughness but noise; he has asked for this twice.
+
 ## Shape of the app
 
 Two Java classes carry almost everything: `MainActivity` (all UI, built in code) and `ReaderService`
