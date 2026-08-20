@@ -10,4 +10,7 @@
     <exclude domain="sharedpref" path="reader_documents.xml"/>
     <exclude domain="sharedpref" path="book_positions.xml"/>
     <exclude domain="sharedpref" path="sleep_rewind_state.xml"/>
+    <!-- The text of the last web page, kept so it survives the app being killed. It belongs to the phone
+         it was read on; carrying an old article onto a new one is a surprise, not a convenience. -->
+    <exclude domain="file" path="last_page.txt"/>
 </full-backup-content>

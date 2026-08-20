@@ -6,8 +6,9 @@
 
 1. Copy text, in More, puts the article that was read in on the clipboard. It is offered for a web page; a passage shared from another app came from somewhere that already has it.
 2. Share text, in More, hands the article to another app as plain text. It stands beside Copy text and is offered on the same terms: an article is a few thousand characters and travels as text, while a book is far too large for that and travels as a file, which is what Save as TXT is for.
-3. Every page names its own window - Options, Voice settings, Recent files, Bookmarks, Credits - so a screen reader says which page it has come back to after a dialog, a dropdown or another app, instead of saying the name of the app whichever page is open.
-4. Close the app with Back or Home, in Options, off by default. Back normally steps aside and leaves the reading running, the way every player does, so a stray press costs nothing and the headset button brings it straight back. The option turns Back into a full stop instead.
+3. The last web page comes back when the app is opened again. Until now only a book did, because a book is a file that is still on the phone while a page is only an address - so what came back after the app had been killed was the last book, and the article being read had gone. The finished text of the page is now kept on the phone and read from there: no fetching, no waiting, and it works with no connection at all. It is put back where it was left rather than at its beginning, because nothing was chosen - the app is returning what was interrupted. Opening a book, or another page, takes its place. It is not carried to another phone by the backup.
+4. Every page names its own window - Options, Voice settings, Recent files, Bookmarks, Credits - so a screen reader says which page it has come back to after a dialog, a dropdown or another app, instead of saying the name of the app whichever page is open.
+5. Close the app with Back or Home, in Options, off by default. Back normally steps aside and leaves the reading running, the way every player does, so a stray press costs nothing and the headset button brings it straight back. The option turns Back into a full stop instead.
 
 ### Changed
 

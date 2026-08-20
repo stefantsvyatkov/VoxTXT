@@ -173,6 +173,7 @@ public class MainActivity extends Activity implements ReaderService.Listener {
         if (Build.VERSION.SDK_INT >= 33 && checkSelfPermission(Manifest.permission.POST_NOTIFICATIONS) != PackageManager.PERMISSION_GRANTED)
             requestPermissions(new String[]{Manifest.permission.POST_NOTIFICATIONS}, 11);
         if (handleIncoming(getIntent())) return;
+        if (restoreLastPage()) return;
         String last = documents().getString("last_uri", "");
         if (!last.isEmpty()) loadUri(Uri.parse(last), false);
     }
@@ -363,6 +364,7 @@ public class MainActivity extends Activity implements ReaderService.Listener {
                 String name = DocumentText.titleOf(kind, bytes, withoutExtension(fileName)); runOnUiThread(() -> {
                     if (destroyed) return; loadedText = loaded; fromPlainTextFile = plain; fromWeb = false; fromWebPage = false; currentUri = uri.toString(); currentName = name; title.setText(name); title.setVisibility(View.VISIBLE); title.setPadding(0, 0, 0, dp(8)); loading = false;
                     if (remember) documents().edit().putString("last_uri", currentUri).apply();
+                    forgetCachedPage();
                     addRecent(DOCUMENTS_LIST, currentUri, currentName); if (reader == null) pendingText = loaded; else finishLoad(loaded);
                 });
             } catch (Exception e) { runOnUiThread(() -> { loading = false; status.setText(R.string.open_failed); toast(e.getMessage()); updateControls(); if (resumeAfterFilePickerLoad) { resumeAfterFilePickerLoad = false; scheduleAutomaticPlayback(); } }); }
@@ -372,7 +374,8 @@ public class MainActivity extends Activity implements ReaderService.Listener {
         // A book is picked up where it was left. A web page is three minutes long, and being dropped into
         // the middle of one is more often a puzzle than a convenience - so unless the setting says
         // otherwise, it starts at the top.
-        boolean fromStart = fromWeb && getSettings().getBoolean("web_from_start", true);
+        boolean fromStart = fromWeb && !restoringPage && getSettings().getBoolean("web_from_start", true);
+        restoringPage = false;
         int position = fromStart ? 0 : reader.savedPosition(currentUri);
         reader.load(currentUri, currentName, loaded, position, fromWeb);
         if (resumeAfterFilePickerLoad) { resumeAfterFilePickerLoad = false; scheduleAutomaticPlayback(); }
@@ -418,6 +421,7 @@ public class MainActivity extends Activity implements ReaderService.Listener {
         currentUri = article.url; currentName = article.title.isEmpty() ? getString(R.string.web_page) : article.title;
         title.setText(currentName); title.setVisibility(View.VISIBLE); title.setPadding(0, 0, 0, dp(8)); loading = false;
         addRecent(PAGES_LIST, currentUri, currentName);
+        rememberPage(article.text, true);
         if (reader == null) { pendingText = article.text; resumeAfterFilePickerLoad = startReading; }
         else { finishLoad(article.text); if (startReading) scheduleAutomaticPlayback(); }
         updateControls();
@@ -436,6 +440,7 @@ public class MainActivity extends Activity implements ReaderService.Listener {
         loadedText = shared; fromPlainTextFile = false; fromWeb = true; fromWebPage = false;
         currentUri = "shared:" + Integer.toHexString(shared.hashCode()); currentName = getString(R.string.shared_text);
         title.setText(currentName); title.setVisibility(View.VISIBLE); title.setPadding(0, 0, 0, dp(8)); loading = false;
+        rememberPage(shared, false);
         if (reader == null) { pendingText = shared; resumeAfterFilePickerLoad = true; }
         else { finishLoad(shared); scheduleAutomaticPlayback(); }
         updateControls();
@@ -1447,6 +1452,7 @@ public class MainActivity extends Activity implements ReaderService.Listener {
     private void forgetBook(String itemUri) {
         if (itemUri.equals(currentUri)) clearCurrentDocument();
         if (itemUri.equals(documents().getString("last_uri", ""))) documents().edit().remove("last_uri").apply();
+        if (itemUri.equals(documents().getString("last_page_uri", ""))) forgetCachedPage();
         if (reader != null) reader.forgetBook(itemUri);
         try { JSONObject all = new JSONObject(documents().getString("bookmarks", "{}")); all.remove(itemUri); documents().edit().putString("bookmarks", all.toString()).apply(); }
         catch (JSONException ignored) {}
@@ -1485,6 +1491,7 @@ public class MainActivity extends Activity implements ReaderService.Listener {
                     loadedText = selected.text; fromPlainTextFile = selected.plainTextFile; fromWeb = false; fromWebPage = false;
                     currentUri = selected.uri; currentName = selected.name;
                     documents().edit().putString("last_uri", currentUri).apply();
+                    forgetCachedPage();
                     if (reader == null) pendingText = selected.text; else finishLoad(selected.text);
                 }
                 buildUi(); if (reader != null) reader.setListener(this); returnToReader();
@@ -1526,9 +1533,56 @@ public class MainActivity extends Activity implements ReaderService.Listener {
             return new RecentDocument(uriValue, savedName.isEmpty() ? withoutExtension(fileName) : savedName, loaded, plain);
         } catch (Exception ignored) { return null; }
     }
+    // What was being read when a web page or a shared passage was open. Neither is a file on the phone, so
+    // neither survives the app being killed the way a book does - the book is still on the storage and is
+    // simply opened again, while a page exists only as an address. Fetching it afresh at every start would
+    // cost the network, could fail, and with Start a web page from the beginning switched on would land the
+    // reader at the top of it anyway. So the finished text is kept here instead, and read back from the disk.
+    //
+    // Coming back this way is not the same as opening a page. Nothing was chosen; the app is putting back
+    // what was interrupted, so the place it was left at is honoured and the from-the-beginning rule is not.
+    private static final String PAGE_CACHE = "last_page.txt";
+    private static final String LAST_KIND = "last_kind";
+    private boolean restoringPage;
+
+    private void rememberPage(String text, boolean webPage) {
+        documents().edit().putString(LAST_KIND, "page").putString("last_page_uri", currentUri)
+            .putString("last_page_title", currentName).putBoolean("last_page_web", webPage).apply();
+        io.execute(() -> {
+            try (OutputStream out = openFileOutput(PAGE_CACHE, MODE_PRIVATE)) { out.write(text.getBytes(StandardCharsets.UTF_8)); }
+            catch (Exception ignored) {}
+        });
+    }
+    private void forgetCachedPage() {
+        documents().edit().remove(LAST_KIND).remove("last_page_uri").remove("last_page_title").remove("last_page_web").apply();
+        try { deleteFile(PAGE_CACHE); } catch (Exception ignored) {}
+    }
+    // Put back on the screen without a word to the network. Anything wrong with what was kept - missing,
+    // empty, unreadable - and the app falls quietly through to the last book, exactly as it did before.
+    private boolean restoreLastPage() {
+        if (!"page".equals(documents().getString(LAST_KIND, ""))) return false;
+        String text = readCachedPage();
+        if (text == null || text.trim().isEmpty()) { forgetCachedPage(); return false; }
+        loadedText = text; fromPlainTextFile = false; fromWeb = true;
+        fromWebPage = documents().getBoolean("last_page_web", true);
+        currentUri = documents().getString("last_page_uri", "");
+        currentName = documents().getString("last_page_title", getString(R.string.web_page));
+        title.setText(currentName); title.setVisibility(View.VISIBLE); title.setPadding(0, 0, 0, dp(8));
+        restoringPage = true;
+        if (reader == null) pendingText = text; else finishLoad(text);
+        return true;
+    }
+    private String readCachedPage() {
+        try (InputStream in = openFileInput(PAGE_CACHE); ByteArrayOutputStream out = new ByteArrayOutputStream()) {
+            byte[] buffer = new byte[8192]; int total = 0, n;
+            while ((n = in.read(buffer)) != -1) { total += n; if (total > MAX_BYTES) return null; out.write(buffer, 0, n); }
+            return new String(out.toByteArray(), StandardCharsets.UTF_8);
+        } catch (Exception e) { return null; }
+    }
     private void clearCurrentDocument() {
         cancelAutomaticResume(true); resumeAfterFilePickerLoad = false; pendingText = null; loadedText = null; fromPlainTextFile = false; fromWeb = false; fromWebPage = false; currentUri = ""; currentName = "";
         documents().edit().remove("last_uri").apply();
+        forgetCachedPage();
         if (reader != null) reader.clearDocument();
     }
     @android.annotation.SuppressLint("GestureBackNavigation")
