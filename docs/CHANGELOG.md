@@ -4,33 +4,33 @@
 
 ### New
 
-1. Copy text, in More, puts the article that was read in on the clipboard. It is offered for a web page; a passage shared from another app came from somewhere that already has it.
-2. Share text, in More, hands the article to another app as plain text. It stands beside Copy text and is offered on the same terms: an article is a few thousand characters and travels as text, while a book is far too large for that and travels as a file, which is what Save as TXT is for.
-3. The last web page comes back when the app is opened again. Until now only a book did, because a book is a file that is still on the phone while a page is only an address - so what came back after the app had been killed was the last book, and the article being read had gone. The finished text of the page is now kept on the phone and read from there: no fetching, no waiting, and it works with no connection at all. It is put back where it was left rather than at its beginning, because nothing was chosen - the app is returning what was interrupted. Opening a book, or another page, takes its place. It is not carried to another phone by the backup.
-4. Every page names its own window - Options, Voice settings, Recent files, Bookmarks, Credits - so a screen reader says which page it has come back to after a dialog, a dropdown or another app, instead of saying the name of the app whichever page is open.
-5. Close the app with Back or Home, in Options, off by default. Back normally steps aside and leaves the reading running, the way every player does, so a stray press costs nothing and the headset button brings it straight back. The option turns Back into a full stop instead.
+1. Copy text, in More, puts the article that was read in on the clipboard. It is offered for a web page.
+2. Share text, in More, hands the article to another app as plain text. A book is far too large to travel that way and goes through Save as TXT instead.
+3. The last web page comes back when the app is opened again, from text kept on the phone - no fetching, no waiting and no connection needed. It returns where it was left rather than at its beginning.
+4. Every page names its own window, so a screen reader says which page it has come back to after a dialog or another app.
+5. Close the app with Back or Home, in Options, off by default. Back normally steps aside and leaves the reading running, the way every player does.
 
 ### Changed
 
-1. Opening a file with Open TXT starts reading it. Every other way in already did — a file chosen from Recent files, a page shared from the browser, a book opened from a file manager — and Open was the one that left you looking at a book and wondering why it was silent.
-2. Buttons are blue rather than the grey the platform gives them, deep on the light theme and a shade lighter on the dark one so that the button is still a shape against a black page. The lettering is white on both and none of the contrast is given up for the colour.
-3. The sentence being read is marked in yellow and written in black, in both themes — a highlighter over ink, which against a black page is the most visible thing on the screen.
-4. The sliders are thicker, and the part already covered is drawn in the colour of the app against a grey track. They used to be a hairline, and white on light grey said nothing about how far along they were.
-5. The launcher icon is adaptive, so it takes the shape the phone gives icons instead of being cropped, and it has a monochrome form for themed icons.
+1. Opening a file with Open TXT starts reading it, as every other way into a book already did.
+2. Buttons are blue rather than the grey the platform gives them, deep on the light theme and a shade lighter on the dark one, with white lettering on both.
+3. The sentence being read is marked in yellow and written in black, in both themes.
+4. The sliders are thicker, and the part already covered is drawn in the colour of the app against a grey track.
+5. The launcher icon is adaptive, so the phone can give it its own shape, and it has a monochrome form for themed icons.
 6. The open tab in Voice settings and in Recent files is filled in, so which one is open can be seen and not only heard.
 7. The dropdowns have an outline, so they read as fields rather than as a line of text.
-8. A dropdown long enough to scroll opens with the screen reader on its first entry. A short one already did, and is left alone - taking a focus that is already there would only announce it twice. Nothing is done on the way out: where the reader goes when a dropdown closes is the system's business.
+8. A dropdown long enough to scroll opens with the screen reader on its first entry.
 
 ### Fixed
 
-1. Clearing the app from Recents did not always finish it off. The book stayed loaded and the media session stayed open, so a Play from a headset or from the notification brought the app back from the dead; and because a service something is still bound to does not end when asked, the player could sit in the notification shade doing nothing. Stopping now drops the document, closes the session and takes the notification down by name.
-2. Footnote reference numbers were read out stuck to the word in front of them — "the tavern1" — in FB2 and in EPUB alike.
-3. The notification carried the app icon, which Android draws as a silhouette, so a solid white square appeared in the status bar instead of a symbol.
-4. Back ended the screen of the app while leaving the reading running behind it. What was left in Recents was a task with no screen at all, and with no screen there was nothing left to notice a later Clear from Recents - which is how a book could go on reading after the app had been cleared away. Back now steps the app aside and leaves the screen standing.
-5. Removing an entry from Recent files or from Bookmarks sent the screen reader back to the top of the page. It now stays where the entry stood, on whatever moved up into its place, or on the line that says the list is empty.
-6. The Interface text size slider was the one slider left thin and grey while every other had been made thicker and coloured.
-7. Reading gave up when the screen reader spoke through the same voice engine. One engine can only say one thing at a time, so every announcement took the sentence away from the book — and the book treated that as the voice having failed. Sometimes it stopped with a message saying so, sometimes it stood in silence with the player still showing that it was reading, and nothing but closing the book got out of that. It now waits for the engine and says the sentence again once it is free, however long the announcement was. A sentence the engine accepts and then never speaks — which it reports as nothing at all, no start and no error — is now noticed and sent again instead of being waited on for good.
-8. Names in Recent files, in Bookmarks and in the sleep timer were invisible: the rows had been given the lettering that belongs on a filled button and then had the fill taken away, leaving white on white in one theme and black on black in the other. The screen reader read them out all along.
+1. Clearing the app from Recents did not always finish it off. A Play from a headset could bring it back, and the player could be left sitting in the notification shade doing nothing.
+2. Footnote reference numbers were read out stuck to the word in front of them - "the tavern1" - in FB2 and in EPUB alike.
+3. A solid white square appeared in the status bar in place of the notification symbol.
+4. Back ended the screen of the app while leaving the reading running behind it, and a book could then go on reading after the app had been cleared from Recents.
+5. Removing an entry from Recent files or from Bookmarks sent the screen reader back to the top of the page instead of leaving it where the entry stood.
+6. The Interface text size slider was the one slider left thin and grey.
+7. Reading gave up when the screen reader spoke through the same voice engine. A busy engine was treated as a failed one, so the book either stopped with a message about the voice or stood in silence with the player still showing that it was reading. It now waits for the engine and says the sentence again once it is free.
+8. Names in Recent files, in Bookmarks and in the sleep timer were invisible - white on white in one theme and black on black in the other. The screen reader read them out all along.
 
 ## Changes in Beta 4
 
