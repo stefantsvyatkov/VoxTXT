@@ -22,6 +22,8 @@
     <string name="copy_text">Копиране на текста</string>
     <string name="text_copied">Текстът е копиран</string>
     <string name="copy_failed">Текстът не можа да бъде копиран</string>
+    <string name="share_text">Споделяне на текста</string>
+    <string name="share_failed">Текстът не можа да бъде споделен</string>
     <string name="save_as_txt">Запазване като TXT</string>
     <string name="saved_to">Запазено в %1$s</string>
     <string name="save_failed">Файлът не можа да бъде запазен</string>

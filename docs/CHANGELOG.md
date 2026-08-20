@@ -5,7 +5,9 @@
 ### New
 
 1. Copy text, in More, puts the article that was read in on the clipboard. It is offered for a web page; a passage shared from another app came from somewhere that already has it.
-2. Close the app with Back or Home, in Options, off by default. Back normally steps aside and leaves the reading running, the way every player does, so a stray press costs nothing and the headset button brings it straight back. The option turns Back into a full stop instead.
+2. Share text, in More, hands the article to another app as plain text. It stands beside Copy text and is offered on the same terms: an article is a few thousand characters and travels as text, while a book is far too large for that and travels as a file, which is what Save as TXT is for.
+3. Every page names its own window - Options, Voice settings, Recent files, Bookmarks, Credits - so a screen reader says which page it has come back to after a dialog, a dropdown or another app, instead of saying the name of the app whichever page is open.
+4. Close the app with Back or Home, in Options, off by default. Back normally steps aside and leaves the reading running, the way every player does, so a stray press costs nothing and the headset button brings it straight back. The option turns Back into a full stop instead.
 
 ### Changed
 
@@ -16,13 +18,17 @@
 5. The launcher icon is adaptive, so it takes the shape the phone gives icons instead of being cropped, and it has a monochrome form for themed icons.
 6. The open tab in Voice settings and in Recent files is filled in, so which one is open can be seen and not only heard.
 7. The dropdowns have an outline, so they read as fields rather than as a line of text.
+8. A dropdown long enough to scroll opens with the screen reader on its first entry. A short one already did, and is left alone - taking a focus that is already there would only announce it twice. Nothing is done on the way out: where the reader goes when a dropdown closes is the system's business.
 
 ### Fixed
 
 1. Clearing the app from Recents did not always finish it off. The book stayed loaded and the media session stayed open, so a Play from a headset or from the notification brought the app back from the dead; and because a service something is still bound to does not end when asked, the player could sit in the notification shade doing nothing. Stopping now drops the document, closes the session and takes the notification down by name.
 2. Footnote reference numbers were read out stuck to the word in front of them — "the tavern1" — in FB2 and in EPUB alike.
 3. The notification carried the app icon, which Android draws as a silhouette, so a solid white square appeared in the status bar instead of a symbol.
-4. Names in Recent files, in Bookmarks and in the sleep timer were invisible: the rows had been given the lettering that belongs on a filled button and then had the fill taken away, leaving white on white in one theme and black on black in the other. The screen reader read them out all along.
+4. Back ended the screen of the app while leaving the reading running behind it. What was left in Recents was a task with no screen at all, and with no screen there was nothing left to notice a later Clear from Recents - which is how a book could go on reading after the app had been cleared away. Back now steps the app aside and leaves the screen standing.
+5. Removing an entry from Recent files or from Bookmarks sent the screen reader back to the top of the page. It now stays where the entry stood, on whatever moved up into its place, or on the line that says the list is empty.
+6. The Interface text size slider was the one slider left thin and grey while every other had been made thicker and coloured.
+7. Names in Recent files, in Bookmarks and in the sleep timer were invisible: the rows had been given the lettering that belongs on a filled button and then had the fill taken away, leaving white on white in one theme and black on black in the other. The screen reader read them out all along.
 
 ## Changes in Beta 4
 

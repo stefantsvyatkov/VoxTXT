@@ -22,6 +22,8 @@
     <string name="copy_text">Copy text</string>
     <string name="text_copied">Text copied</string>
     <string name="copy_failed">The text could not be copied</string>
+    <string name="share_text">Share text</string>
+    <string name="share_failed">The text could not be shared</string>
     <string name="save_as_txt">Save as TXT</string>
     <string name="saved_to">Saved to %1$s</string>
     <string name="save_failed">The file could not be saved</string>

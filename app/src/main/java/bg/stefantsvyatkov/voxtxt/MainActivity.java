@@ -107,7 +107,7 @@ public class MainActivity extends Activity implements ReaderService.Listener {
             setBackground(box);
             setPadding(dp(12), dp(10), dp(12), dp(10));
         }
-        @Override public boolean performClick() { selectionFromPopup = true; return super.performClick(); }
+        @Override public boolean performClick() { selectionFromPopup = true; spinnerPopupOpening = true; return super.performClick(); }
         boolean consumePopupSelection() { boolean value = selectionFromPopup; selectionFromPopup = false; return value; }
     }
     private class PercentSeekBar extends SeekBar {
@@ -264,7 +264,7 @@ public class MainActivity extends Activity implements ReaderService.Listener {
         addPlayerButton(playerButtons, voiceButton); addPlayerButton(playerButtons, previous); addPlayerButton(playerButtons, play); addPlayerButton(playerButtons, next); addPlayerButton(playerButtons, sleepButton);
         playerPanel.addView(playerButtons, new LinearLayout.LayoutParams(-1, dp(64)));
         playerPanel.addView(sleepRewindButton, new LinearLayout.LayoutParams(-1, dp(58)));
-        LinearLayout.LayoutParams panelParams = new LinearLayout.LayoutParams(-1, dp(200)); panelParams.setMargins(0, dp(4), 0, dp(4)); root.addView(playerPanel, panelParams); setContentView(root); applyScreenSetting(); updateControls(); if (reader != null) showCurrent(reader.getCurrent(), reader.getCount()); root.requestApplyInsets(); focusHeading(appHeading);
+        LinearLayout.LayoutParams panelParams = new LinearLayout.LayoutParams(-1, dp(200)); panelParams.setMargins(0, dp(4), 0, dp(4)); root.addView(playerPanel, panelParams); setContentView(root); setTitle(getString(R.string.app_name)); applyScreenSetting(); updateControls(); if (reader != null) showCurrent(reader.getCurrent(), reader.getCount()); root.requestApplyInsets();
     }
     private TextView label(String value, int sp, boolean bold) { TextView v = new TextView(this); v.setText(value); v.setTextSize(uiSize(sp)); v.setTextColor(appColor(R.color.text_primary)); if (bold) v.setTypeface(v.getTypeface(), android.graphics.Typeface.BOLD); return v; }
     // The plain grey the platform gives a button is what made the app look like a form. A blue one reads as
@@ -722,7 +722,10 @@ public class MainActivity extends Activity implements ReaderService.Listener {
         // already a file.
         java.util.List<String> names = new ArrayList<>(); java.util.List<Runnable> actions = new ArrayList<>();
         names.add(getString(R.string.open_url)); actions.add(this::showOpenUrlDialog);
-        if (loadedText != null && fromWebPage) { names.add(getString(R.string.copy_text)); actions.add(this::copyLoadedText); }
+        if (loadedText != null && fromWebPage) {
+            names.add(getString(R.string.copy_text)); actions.add(this::copyLoadedText);
+            names.add(getString(R.string.share_text)); actions.add(this::shareLoadedText);
+        }
         if (loadedText != null && !fromPlainTextFile) { names.add(getString(R.string.save_as_txt)); actions.add(this::saveAsTxt); }
         names.add(getString(R.string.search)); actions.add(this::showSearchDialog);
         if (!fromWeb) { names.add(getString(R.string.bookmarks)); actions.add(this::showBookmarks); }
@@ -743,7 +746,12 @@ public class MainActivity extends Activity implements ReaderService.Listener {
         add.setOnClickListener(v -> { addBookmark(); showBookmarks(); });
         box.addView(add, new LinearLayout.LayoutParams(-1, dp(58)));
         JSONArray marks = bookmarks();
-        if (marks.length() == 0) box.addView(emptyNotice(getString(R.string.no_bookmarks)));
+        if (marks.length() == 0) {
+            TextView empty = emptyNotice(getString(R.string.no_bookmarks));
+            box.addView(empty);
+            if (pendingListRow >= 0) listFocusTarget = empty;
+        }
+        java.util.List<View> entries = new ArrayList<>();
         for (int i = 0; i < marks.length(); i++) {
             JSONObject mark = marks.optJSONObject(i); if (mark == null) continue;
             int sentence = mark.optInt("sentence"); String name = mark.optString("text");
@@ -751,11 +759,16 @@ public class MainActivity extends Activity implements ReaderService.Listener {
             Button open = listRowButton(name, 18);
             open.setOnClickListener(v -> jumpFromList(sentence));
             ImageButton remove = imageButton(android.R.drawable.ic_menu_delete, R.string.delete); remove.setContentDescription(getString(R.string.remove_bookmark, name));
-            remove.setOnClickListener(v -> { removeBookmark(sentence); showBookmarks(); });
+            final int position = entries.size();
+            remove.setOnClickListener(v -> { removeBookmark(sentence); pendingListRow = position; showBookmarks(); });
+            entries.add(open);
             row.addView(open, new LinearLayout.LayoutParams(0, -2, 1));
             LinearLayout.LayoutParams removeParams = new LinearLayout.LayoutParams(dp(56), dp(56)); removeParams.setMargins(dp(10), 0, 0, 0); row.addView(remove, removeParams);
             box.addView(row);
         }
+        if (pendingListRow >= 0 && !entries.isEmpty())
+            listFocusTarget = entries.get(Math.min(pendingListRow, entries.size() - 1));
+        pendingListRow = -1;
         showListPage(R.string.bookmarks, box);
     }
 
@@ -854,6 +867,21 @@ public class MainActivity extends Activity implements ReaderService.Listener {
             if (Build.VERSION.SDK_INT < 33) toast(getString(R.string.text_copied));
         } catch (Exception e) { toast(getString(R.string.copy_failed)); }
         returnToReader();
+    }
+    // The article on its way to somebody else, as text rather than as a file. It stands beside Copy because
+    // it carries the same content under the same ceiling: a share hands its text through a system transaction
+    // that a whole book would never fit into. That is why neither is offered for a book - a book travels as a
+    // file, which is what Save as TXT is for.
+    private void shareLoadedText() {
+        if (loadedText == null) { returnToReader(); return; }
+        Intent send = new Intent(Intent.ACTION_SEND).setType("text/plain").putExtra(Intent.EXTRA_TEXT, loadedText);
+        if (!currentName.isEmpty()) send.putExtra(Intent.EXTRA_SUBJECT, currentName);
+        // Marked as a trip out of the app on purpose. Without it, leaving for the chooser looks like the
+        // reader walking away, and with Close the app with Back or Home switched on the app would shut itself
+        // down underneath the chooser.
+        leavingForResult = true;
+        try { startActivity(Intent.createChooser(send, getString(R.string.share_text))); }
+        catch (Exception e) { leavingForResult = false; toast(getString(R.string.share_failed)); returnToReader(); }
     }
     private String clipboardText() {
         try {
@@ -1007,7 +1035,7 @@ public class MainActivity extends Activity implements ReaderService.Listener {
         AccessibleSpinner languageSpinner = new AccessibleSpinner(this); String[] languageValues = {"system", "en", "bg"}; String[] languageLabels = {getString(R.string.language_system), getString(R.string.language_english), getString(R.string.language_bulgarian)}; languageSpinner.setAdapter(themedSpinnerAdapter(languageLabels)); int languagePosition = Arrays.asList(languageValues).indexOf(p.getString("language", "system")); languageSpinner.setSelection(Math.max(0, languagePosition), false); box.addView(languageSpinner); configureSpinnerAccessibility(languageSpinner, languageLabels);
         TextView themeLabel = label(getString(R.string.theme), 18, true); themeLabel.setPadding(0, dp(12), 0, 0); box.addView(themeLabel);
         AccessibleSpinner themeSpinner = new AccessibleSpinner(this); String[] themeValues = {"system", "light", "dark"}; String[] themeLabels = {getString(R.string.theme_system), getString(R.string.theme_light), getString(R.string.theme_dark)}; themeSpinner.setAdapter(themedSpinnerAdapter(themeLabels)); int themePosition = Arrays.asList(themeValues).indexOf(p.getString("theme", "system")); themeSpinner.setSelection(Math.max(0, themePosition), false); box.addView(themeSpinner); configureSpinnerAccessibility(themeSpinner, themeLabels);
-        TextView interfaceValueLabel = addSliderHeader(box, R.string.interface_font_size, 18, dp(12)); SeekBar interfaceFont = new SeekBar(this); interfaceFont.setMax(20); int originalInterfaceScale = p.getInt("interface_scale", 100); interfaceFont.setProgress(Math.max(0, Math.min(20, (originalInterfaceScale - 50) / 5))); sliderValues.put(interfaceFont, interfaceValueLabel); updateSliderPercentValue(interfaceFont); box.addView(interfaceFont);
+        TextView interfaceValueLabel = addSliderHeader(box, R.string.interface_font_size, 18, dp(12)); SeekBar interfaceFont = new SeekBar(this); thicken(interfaceFont); interfaceFont.setMax(20); int originalInterfaceScale = p.getInt("interface_scale", 100); interfaceFont.setProgress(Math.max(0, Math.min(20, (originalInterfaceScale - 50) / 5))); sliderValues.put(interfaceFont, interfaceValueLabel); updateSliderPercentValue(interfaceFont); box.addView(interfaceFont);
         SeekBar font = seek(box, R.string.document_font_size, 14, 32, p.getInt("font_size", 23));
         SeekBar fastSeekInterval = millisecondSeek(box, R.string.fast_seek_interval, FAST_SEEK_MIN_MS, FAST_SEEK_MAX_MS, 50, fastSeekInterval(p));
         CheckBox seekVibration = new CheckBox(this); seekVibration.setText(R.string.seek_vibration); seekVibration.setTextSize(uiSize(18)); seekVibration.setChecked(p.getBoolean("seek_vibration", true)); seekVibration.setPadding(0, dp(6), 0, dp(10)); box.addView(seekVibration, new LinearLayout.LayoutParams(-1, -2));
@@ -1064,10 +1092,11 @@ public class MainActivity extends Activity implements ReaderService.Listener {
     }
     private void showVoiceSettings(String profile) {
         if (reader == null) return; android.content.SharedPreferences p = getSettings(); pausePlaybackOutsideReader(); sliderValues.clear();
+        final String[] kept = pendingVoice.get(profile);
         ArrayList<ReaderService.EngineOption> engines = new ArrayList<>(); engines.add(new ReaderService.EngineOption("", getString(R.string.default_voice))); engines.addAll(reader.getEngineOptions());
         LinearLayout box = new LinearLayout(this); box.setOrientation(LinearLayout.VERTICAL); box.setPadding(dp(20), 0, dp(20), 0);
         TextView engineLabel = label(getString(R.string.speech_engine), 18, true); engineLabel.setPadding(0, dp(12), 0, 0); box.addView(engineLabel);
-        String[] engineLabels = new String[engines.size()]; for (int i = 0; i < engines.size(); i++) engineLabels[i] = engines.get(i).label; AccessibleSpinner engineSpinner = new AccessibleSpinner(this); engineSpinner.setAdapter(themedSpinnerAdapter(engineLabels)); String savedEngine = p.getString(profile + "engine", ""); int selectedEngine = 0; for (int i = 1; i < engines.size(); i++) if (engines.get(i).name.equals(savedEngine)) { selectedEngine = i; break; } engineSpinner.setSelection(selectedEngine, false); box.addView(engineSpinner);
+        String[] engineLabels = new String[engines.size()]; for (int i = 0; i < engines.size(); i++) engineLabels[i] = engines.get(i).label; AccessibleSpinner engineSpinner = new AccessibleSpinner(this); engineSpinner.setAdapter(themedSpinnerAdapter(engineLabels)); String savedEngine = kept != null ? kept[0] : p.getString(profile + "engine", ""); int selectedEngine = 0; for (int i = 1; i < engines.size(); i++) if (engines.get(i).name.equals(savedEngine)) { selectedEngine = i; break; } engineSpinner.setSelection(selectedEngine, false); box.addView(engineSpinner);
         TextView languageLabel = label(getString(R.string.language), 18, true); languageLabel.setPadding(0, dp(12), 0, 0); languageLabel.setVisibility(View.GONE); box.addView(languageLabel);
         AccessibleSpinner languageSpinner = new AccessibleSpinner(this); languageSpinner.setVisibility(View.GONE); box.addView(languageSpinner); ArrayList<LanguageOption> voiceLanguages = new ArrayList<>();
         TextView voiceLabel = label(getString(R.string.voice), 18, true); voiceLabel.setPadding(0, dp(12), 0, 0); voiceLabel.setVisibility(View.GONE); box.addView(voiceLabel);
@@ -1080,16 +1109,18 @@ public class MainActivity extends Activity implements ReaderService.Listener {
                 if (destroyed || engineSpinner.getSelectedItemPosition() < 0 || !requestedEngine.equals(engines.get(engineSpinner.getSelectedItemPosition()).name)) return;
                 voiceSelection.all = new ArrayList<>(available); voiceLanguages.clear(); voiceLanguages.addAll(buildVoiceLanguages(available));
                 String[] languageNames = new String[voiceLanguages.size()]; for (int i = 0; i < voiceLanguages.size(); i++) languageNames[i] = voiceLanguages.get(i).label;
-                languageSpinner.setAdapter(themedSpinnerAdapter(languageNames)); String savedVoice = p.getString(ReaderService.voicePreferenceKey(profile, requestedEngine), ""), wantedTag = localeForVoice(available, savedVoice); int selectedLanguage = bestLanguagePosition(voiceLanguages, wantedTag); languageSpinner.setSelection(selectedLanguage, false);
-                configureSpinnerAccessibility(languageSpinner, languageNames, selected -> populateVoiceChoices(voiceSpinner, voiceSelection, voiceLanguages.get(selected).tag, requestedEngine, p, profile));
-                populateVoiceChoices(voiceSpinner, voiceSelection, voiceLanguages.get(selectedLanguage).tag, requestedEngine, p, profile);
+                languageSpinner.setAdapter(themedSpinnerAdapter(languageNames)); String savedVoice = kept != null && requestedEngine.equals(kept[0]) ? kept[1] : p.getString(ReaderService.voicePreferenceKey(profile, requestedEngine), "");
+                String wantedTag = localeForVoice(available, savedVoice);
+                int selectedLanguage = bestLanguagePosition(voiceLanguages, wantedTag); languageSpinner.setSelection(selectedLanguage, false);
+                configureSpinnerAccessibility(languageSpinner, languageNames, selected -> populateVoiceChoices(voiceSpinner, voiceSelection, voiceLanguages.get(selected).tag, savedVoice));
+                populateVoiceChoices(voiceSpinner, voiceSelection, voiceLanguages.get(selectedLanguage).tag, savedVoice);
                 languageLabel.setVisibility(View.VISIBLE); languageSpinner.setVisibility(View.VISIBLE); voiceLabel.setVisibility(View.VISIBLE); voiceSpinner.setVisibility(View.VISIBLE); if (previewButton != null) previewButton.setVisibility(View.VISIBLE);
             }));
         });
-        PercentSeekBar rate = percentSeek(box, R.string.speech_rate, p.getInt(profile + "rate_percent", 20));
-        PercentSeekBar pitch = percentSeek(box, R.string.pitch, p.getInt(profile + "pitch_percent", 20));
-        PercentSeekBar volume = percentSeek(box, R.string.volume, p.getInt(profile + "volume_percent", 50));
-        SeekBar gap = millisecondSeek(box, p.getInt(profile + "sentence_pause", 0));
+        PercentSeekBar rate = percentSeek(box, R.string.speech_rate, kept != null ? Integer.parseInt(kept[2]) : p.getInt(profile + "rate_percent", 20));
+        PercentSeekBar pitch = percentSeek(box, R.string.pitch, kept != null ? Integer.parseInt(kept[3]) : p.getInt(profile + "pitch_percent", 20));
+        PercentSeekBar volume = percentSeek(box, R.string.volume, kept != null ? Integer.parseInt(kept[4]) : p.getInt(profile + "volume_percent", 50));
+        SeekBar gap = millisecondSeek(box, kept != null ? Integer.parseInt(kept[5]) : p.getInt(profile + "sentence_pause", 0));
         previewAction = () -> {
             if (reader == null || destroyed) return;
             reader.previewVoice(engines.get(Math.max(0, engineSpinner.getSelectedItemPosition())).name, selectedVoiceName(voiceSelection, voiceSpinner),
@@ -1230,12 +1261,12 @@ public class MainActivity extends Activity implements ReaderService.Listener {
         for (int i = 0; i < languages.size(); i++) if (languages.get(i).tag.equalsIgnoreCase(deviceLanguage)) return i;
         return 0;
     }
-    private void populateVoiceChoices(AccessibleSpinner spinner, VoiceSelection selection, String localeTag, String engine, android.content.SharedPreferences preferences, String profile) {
+    private void populateVoiceChoices(AccessibleSpinner spinner, VoiceSelection selection, String localeTag, String wantedVoice) {
         // Which voices exist at all is decided in the service; here they are only narrowed to one language.
         ArrayList<ReaderService.VoiceOption> matching = new ArrayList<>(); for (ReaderService.VoiceOption voice : selection.all) { String language = voice.localeTag.isEmpty() ? Locale.getDefault().getLanguage() : Locale.forLanguageTag(voice.localeTag).getLanguage(); if (localeTag.equalsIgnoreCase(language)) matching.add(voice); }
         selection.visible = new ArrayList<>(); selection.visible.add(new ReaderService.VoiceOption("", getString(R.string.default_voice), localeTag)); selection.visible.addAll(matching);
         String[] labels = new String[selection.visible.size()]; labels[0] = getString(R.string.default_voice); for (int i = 0; i < matching.size(); i++) labels[i + 1] = voiceLabel(matching.get(i).name, i + 1);
-        spinner.setAdapter(themedSpinnerAdapter(labels)); String saved = preferences.getString(ReaderService.voicePreferenceKey(profile, engine), ""); int selected = 0; for (int i = 1; i < selection.visible.size(); i++) if (selection.visible.get(i).name.equals(saved)) { selected = i; break; } spinner.setSelection(selected, false); spinner.setEnabled(selection.visible.size() > 1); configureSpinnerAccessibility(spinner, labels);
+        spinner.setAdapter(themedSpinnerAdapter(labels)); int selected = 0; for (int i = 1; i < selection.visible.size(); i++) if (selection.visible.get(i).name.equals(wantedVoice)) { selected = i; break; } spinner.setSelection(selected, false); spinner.setEnabled(selection.visible.size() > 1); configureSpinnerAccessibility(spinner, labels);
     }
     // Voice names arrive in every shape: "Milena", "bg-BG-Ivan", "bg-bg-x-ifb-local",
     // "en-us-x-sfg#female_1-local". The locale prefix and the technical tails are stripped; whatever real
@@ -1249,12 +1280,39 @@ public class MainActivity extends Activity implements ReaderService.Listener {
         return Character.toUpperCase(cleaned.charAt(0)) + cleaned.substring(1);
     }
     private void focusDialogTitle(AlertDialog dialog) { View titleView = dialog.findViewById(getResources().getIdentifier("alertTitle", "id", "android")); if (titleView != null) { if (Build.VERSION.SDK_INT >= 28) titleView.setAccessibilityHeading(true); titleView.postDelayed(() -> titleView.performAccessibilityAction(android.view.accessibility.AccessibilityNodeInfo.ACTION_ACCESSIBILITY_FOCUS, null), 220L); } }
+    // Where the screen reader goes when a page has been built. Two cases ask for it by name: an entry
+    // removed from a list, where the reader belongs at the place it stood, and a tab just picked, which must
+    // not throw the reader back to the top of the page.
+    //
+    // Otherwise nothing is moved. The window carries the name of the page now and the system announces that
+    // by itself; putting the reader on a heading that says those same words only said them a second time.
     private void focusAfterBuild(View heading) {
+        if (listFocusTarget != null) { View target = listFocusTarget; listFocusTarget = null; focusPickedTab = false; focusHeading(target); return; }
         if (focusPickedTab && pickedTab != null) { focusPickedTab = false; focusHeading(pickedTab); return; }
-        focusPickedTab = false; focusHeading(heading);
+        focusPickedTab = false;
     }
     private void focusHeading(View heading) { heading.postDelayed(() -> heading.performAccessibilityAction(android.view.accessibility.AccessibilityNodeInfo.ACTION_ACCESSIBILITY_FOCUS, null), 220L); }
-    private ArrayAdapter<String> themedSpinnerAdapter(String[] values) { return new ArrayAdapter<String>(this, android.R.layout.simple_spinner_item, values) { private View style(View view, boolean dropdown) { if (view instanceof TextView) { ((TextView)view).setTextColor(appColor(R.color.text_primary)); ((TextView)view).setTextSize(uiSize(18)); view.setBackgroundColor(appColor(R.color.window_bg)); view.setPadding(dp(12), dp(12), dp(12), dp(12)); view.setImportantForAccessibility(dropdown ? View.IMPORTANT_FOR_ACCESSIBILITY_YES : View.IMPORTANT_FOR_ACCESSIBILITY_NO); view.setAccessibilityDelegate(new View.AccessibilityDelegate() { @Override public void onInitializeAccessibilityNodeInfo(View host, android.view.accessibility.AccessibilityNodeInfo info) { super.onInitializeAccessibilityNodeInfo(host, info); info.setCollectionItemInfo(null); } }); } return view; } @Override public View getView(int position, View convertView, ViewGroup parent) { return style(super.getView(position, convertView, parent), false); } @Override public View getDropDownView(int position, View convertView, ViewGroup parent) { return style(super.getDropDownView(position, convertView, parent), true); } }; }
+    private ArrayAdapter<String> themedSpinnerAdapter(String[] values) { return new ArrayAdapter<String>(this, android.R.layout.simple_spinner_item, values) { private View style(View view, boolean dropdown) { if (view instanceof TextView) { ((TextView)view).setTextColor(appColor(R.color.text_primary)); ((TextView)view).setTextSize(uiSize(18)); view.setBackgroundColor(appColor(R.color.window_bg)); view.setPadding(dp(12), dp(12), dp(12), dp(12)); view.setImportantForAccessibility(dropdown ? View.IMPORTANT_FOR_ACCESSIBILITY_YES : View.IMPORTANT_FOR_ACCESSIBILITY_NO); view.setAccessibilityDelegate(new View.AccessibilityDelegate() { @Override public void onInitializeAccessibilityNodeInfo(View host, android.view.accessibility.AccessibilityNodeInfo info) { super.onInitializeAccessibilityNodeInfo(host, info); info.setCollectionItemInfo(null); } }); } return view; } @Override public View getView(int position, View convertView, ViewGroup parent) { return style(super.getView(position, convertView, parent), false); } @Override public View getDropDownView(int position, View convertView, ViewGroup parent) { View row = style(super.getDropDownView(position, convertView, parent), true); nudgePopupFocus(row); return row; } }; }
+    // The platform's popup is left exactly as it is. This only moves the screen reader onto a row of it when
+    // the system has not put it on one itself - which is what happens once the list is long enough to scroll,
+    // and is why a long list used to announce itself and then leave the reader to go looking.
+    //
+    // The wait is for the window to finish appearing; asking before that lands on a row that is not on the
+    // screen yet. The check afterwards is what leaves a short list alone: there the first entry already has
+    // the focus, and taking it again would only say it twice.
+    //
+    // Nothing at all is done on the way out. Whichever way the popup closes, where the reader goes next is
+    // the system's business, and every attempt to improve on it made the two ways out disagree.
+    private void nudgePopupFocus(View row) {
+        if (!spinnerPopupOpening) return;
+        row.postDelayed(() -> {
+            if (!spinnerPopupOpening || !row.isAttachedToWindow()) return;
+            spinnerPopupOpening = false;
+            if (row.isAccessibilityFocused()) return;
+            row.performAccessibilityAction(android.view.accessibility.AccessibilityNodeInfo.ACTION_ACCESSIBILITY_FOCUS, null);
+        }, 300L);
+    }
+    private boolean spinnerPopupOpening;
     private int seekValue(SeekBar seek) { SeekRange range = (SeekRange)seek.getTag(); return Math.round(range.min + seek.getProgress() * (range.max - range.min) / (float)seek.getMax()); }
     private void applySavedLanguage() { applyLanguage(getSharedPreferences("reader_settings", MODE_PRIVATE).getString("language", "system")); }
     private void applyLanguage(String language) {
@@ -1272,6 +1330,11 @@ public class MainActivity extends Activity implements ReaderService.Listener {
     // Picking a tab rebuilds the page. Sending the screen reader back to the heading afterwards would make
     // every switch a trip back to the top; the finger is on the tab, so that is where the focus belongs and
     // what it should say is the name of the tab and that it is selected.
+    // Where the screen reader should land after a list has been rebuilt. Removing an entry leaves the
+    // reader at the place the entry stood, on whatever moved up into it, rather than sending it back to the
+    // heading and making it walk down the whole list again.
+    private View listFocusTarget;
+    private int pendingListRow = -1;
     private boolean focusPickedTab;
     private View pickedTab;
     private java.util.function.Consumer<String> voiceTabSwitch;
@@ -1283,7 +1346,7 @@ public class MainActivity extends Activity implements ReaderService.Listener {
         } catch (JSONException ignored) {}
     }
     private void showRecent() {
-        pausePlaybackOutsideReader();
+        pausePlaybackOutsideReader(); setTitle(getString(R.string.recent_books));
         showingRecent = true; int pad = dp(16);
         LinearLayout page = new LinearLayout(this); page.setOrientation(LinearLayout.VERTICAL); page.setPadding(pad, dp(10), pad, dp(16)); page.setBackgroundColor(appColor(R.color.window_bg));
         page.setOnApplyWindowInsetsListener((v, insets) -> { v.setPadding(pad, insets.getSystemWindowInsetTop() + dp(10), pad, insets.getSystemWindowInsetBottom() + dp(16)); return insets; });
@@ -1297,7 +1360,10 @@ public class MainActivity extends Activity implements ReaderService.Listener {
         LinearLayout list = new LinearLayout(this); list.setOrientation(LinearLayout.VERTICAL); ScrollView scrolling = new ScrollView(this); scrolling.addView(list); page.addView(scrolling, new LinearLayout.LayoutParams(-1, 0, 1));
         if (!addRecentSection(list, recentTab, PAGES_LIST.equals(recentTab) ? R.string.remove_page : R.string.remove_book)) {
             TextView empty = label(getString(R.string.no_recent), 19, false); empty.setPadding(0, dp(24), 0, dp(24)); list.addView(empty);
+            // Nothing left where the entry stood, so the reader is put on the line that says so.
+            if (pendingListRow >= 0) listFocusTarget = empty;
         }
+        pendingListRow = -1;
         setContentView(page); page.requestApplyInsets(); focusAfterBuild(heading);
     }
     private boolean addRecentSection(LinearLayout list, String which, int removeResource) {
@@ -1306,6 +1372,7 @@ public class MainActivity extends Activity implements ReaderService.Listener {
         int count = Math.min(RECENT_LIMIT, recent.length());
         if (count == 0) return false;
         boolean pages = PAGES_LIST.equals(which);
+        java.util.List<View> entries = new ArrayList<>();
         for (int i = 0; i < count; i++) {
             JSONObject item = recent.optJSONObject(i); if (item == null) continue;
             String itemUri = item.optString("uri"), name = item.optString("name");
@@ -1313,11 +1380,15 @@ public class MainActivity extends Activity implements ReaderService.Listener {
             Button open = listRowButton(name, 19);
             open.setOnClickListener(v -> { if (pages) openRecentPage(itemUri); else openRecent(itemUri); });
             ImageButton remove = imageButton(android.R.drawable.ic_menu_delete, R.string.delete); remove.setContentDescription(getString(removeResource, name));
-            remove.setOnClickListener(v -> removeRecent(which, itemUri));
+            final int position = entries.size();
+            remove.setOnClickListener(v -> removeRecent(which, itemUri, position));
+            entries.add(open);
             row.addView(open, new LinearLayout.LayoutParams(0, -2, 1));
             LinearLayout.LayoutParams removeParams = new LinearLayout.LayoutParams(dp(56), dp(56)); removeParams.setMargins(dp(10), 0, 0, 0);
             row.addView(remove, removeParams); list.addView(row);
         }
+        if (pendingListRow >= 0 && !entries.isEmpty())
+            listFocusTarget = entries.get(Math.min(pendingListRow, entries.size() - 1));
         return true;
     }
     // A saved page is an address and not a file, so it is fetched again. What is stored is where it was, not
@@ -1346,6 +1417,7 @@ public class MainActivity extends Activity implements ReaderService.Listener {
         showSettingsPage(headingResource, content, bottomExtra, applyAction, closeAction, null);
     }
     private void showSettingsPage(int headingResource, View content, View bottomExtra, Runnable applyAction, Runnable closeAction, View tabs) {
+        setTitle(getString(headingResource));
         showingRecent = true; subpageCloseAction = closeAction; int pad = dp(16);
         LinearLayout page = new LinearLayout(this); page.setOrientation(LinearLayout.VERTICAL); page.setPadding(pad, dp(10), pad, dp(16)); page.setBackgroundColor(appColor(R.color.window_bg));
         page.setOnApplyWindowInsetsListener((v, insets) -> { v.setPadding(pad, insets.getSystemWindowInsetTop() + dp(10), pad, insets.getSystemWindowInsetBottom() + dp(16)); return insets; });
@@ -1365,10 +1437,11 @@ public class MainActivity extends Activity implements ReaderService.Listener {
     // book removed and opened again would come back at the percentage it was left at, which is the opposite
     // of what removing it looked like. If it is the book currently open, it is closed as well; leaving it
     // loaded would only write its position back on the next sentence.
-    private void removeRecent(String which, String itemUri) {
+    private void removeRecent(String which, String itemUri, int row) {
         try { JSONArray old = new JSONArray(documents().getString(which, "[]")), fresh = new JSONArray(); for (int i = 0; i < old.length(); i++) if (!itemUri.equals(old.getJSONObject(i).optString("uri"))) fresh.put(old.getJSONObject(i)); documents().edit().putString(which, fresh.toString()).apply(); }
         catch (JSONException e) { toast(getString(R.string.no_recent)); return; }
         forgetBook(itemUri);
+        pendingListRow = row;
         showRecent();
     }
     private void forgetBook(String itemUri) {
