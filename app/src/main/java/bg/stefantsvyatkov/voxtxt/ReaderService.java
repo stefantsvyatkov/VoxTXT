@@ -130,25 +130,23 @@ public class ReaderService extends Service implements TextToSpeech.OnInitListene
     // else. The focus request itself is kept during a short loss; abandoning it would mean never hearing
     // that the sound came back.
     private final AudioManager.OnAudioFocusChangeListener focusListener = change -> {
-        PlaybackLog.event(this, "audio focus change " + change);
         if (change == AudioManager.AUDIOFOCUS_LOSS) { pause(); return; }
         if (change == AudioManager.AUDIOFOCUS_LOSS_TRANSIENT) { boolean wasPlaying = playing; pause(false); pausedByFocusLoss = wasPlaying; return; }
         if (change == AudioManager.AUDIOFOCUS_GAIN && pausedByFocusLoss) { pausedByFocusLoss = false; play(); }
     };
 
     @Override public void onCreate() {
-        super.onCreate(); PlaybackLog.event(this, "service created"); restoreSleepRewindState(); createChannel(); createMediaSession(); restoreVolumeAfterCrash(); registerAudioRouteListeners(); initializeTts(getSharedPreferences("reader_settings", MODE_PRIVATE).getString("engine", ""));
+        super.onCreate(); restoreSleepRewindState(); createChannel(); createMediaSession(); restoreVolumeAfterCrash(); registerAudioRouteListeners(); initializeTts(getSharedPreferences("reader_settings", MODE_PRIVATE).getString("engine", ""));
     }
     @Override public IBinder onBind(Intent intent) { return binder; }
     @Override public int onStartCommand(Intent intent, int flags, int startId) {
         if (intent != null && intent.getAction() != null) {
-            PlaybackLog.event(this, "command " + intent.getAction());
             switch (intent.getAction()) {
                 case ACTION_PLAY: play(); break;
                 case ACTION_PAUSE: pause(); break;
                 case ACTION_PREVIOUS: move(-1); break;
                 case ACTION_NEXT: move(1); break;
-                case ACTION_STOP: shutdown("stop action"); break;
+                case ACTION_STOP: shutdown(); break;
                 case Intent.ACTION_MEDIA_BUTTON:
                     // Started with startForegroundService(), so startForeground() must follow within a few
                     // seconds even when the button turns out to be a no-op (no document, TTS not ready yet).
@@ -164,7 +162,6 @@ public class ReaderService extends Service implements TextToSpeech.OnInitListene
     }
     private void stopIfIdle() {
         if (playing || pendingPlay || !sentences.isEmpty()) return;
-        PlaybackLog.event(this, "idle after a media key, stopping");
         stopForeground(STOP_FOREGROUND_REMOVE); stopSelf();
     }
     // Swiping the app away, or Close all in Recents, is a request to be rid of it, and it is taken literally:
@@ -172,8 +169,7 @@ public class ReaderService extends Service implements TextToSpeech.OnInitListene
     // that moment. Closing an app from the very place meant for closing apps should leave nothing behind.
     // The position is saved on the way out, so the book opens again where it was left.
     @Override public void onTaskRemoved(Intent rootIntent) {
-        PlaybackLog.event(this, "onTaskRemoved");
-        shutdown("task removed");
+        shutdown();
         super.onTaskRemoved(rootIntent);
     }
     // One way out, used by Stop, by Back when the option asks for it, and by the app being cleared from
@@ -189,8 +185,7 @@ public class ReaderService extends Service implements TextToSpeech.OnInitListene
     // does not die when it is told to, and the screen is usually still bound at this moment. By then it no
     // longer matters. What is left is an object with no session, no notification, no document and no way in,
     // and it goes when the screen unbinds.
-    private void shutdown(String reason) {
-        PlaybackLog.event(this, "shutdown (" + reason + ")");
+    private void shutdown() {
         pause();
         setArmed(false);
         text = ""; uri = ""; title = "Vox TXT"; current = 0; reachedEnd = false; sentences.clear();
@@ -205,18 +200,16 @@ public class ReaderService extends Service implements TextToSpeech.OnInitListene
         if (manager != null) manager.cancel(NOTIFICATION_ID);
         stopSelf();
     }
-    public void stopEverything(String reason) { shutdown(reason); }
+    public void stopEverything() { shutdown(); }
     // A released session cannot be woken, cannot be routed to, and does not appear in the phone's list of
     // players. Deactivating one only mutes it.
     private void releaseMediaSession() {
         MediaSession session = mediaSession; mediaSession = null;
         if (session == null) return;
         try { session.setActive(false); session.release(); } catch (Exception ignored) {}
-        PlaybackLog.event(this, "media session released");
     }
     private void setArmed(boolean armed) {
         getSharedPreferences("reader_settings", MODE_PRIVATE).edit().putBoolean(ARMED, armed).apply();
-        PlaybackLog.event(this, "player armed=" + armed);
     }
 
     public void setListener(Listener value) { listener = value; notifyState(); }
@@ -263,7 +256,7 @@ public class ReaderService extends Service implements TextToSpeech.OnInitListene
     public void play() {
         if (sleepRewindAvailable) { clearSleepRewindState(); notifyState(); }
         if (!ready) { pendingPlay = true; return; }
-        if (sentences.isEmpty()) { PlaybackLog.event(this, "play ignored, no document"); return; }
+        if (sentences.isEmpty()) { return; }
         // The last sentence has already been read out; playing again would simply repeat it.
         if (reachedEnd) { error(getString(R.string.no_more_text)); return; }
         if (captureSleepStartOnPlay) { sleepStartSentence = current; captureSleepStartOnPlay = false; }
@@ -273,13 +266,12 @@ public class ReaderService extends Service implements TextToSpeech.OnInitListene
         speechHandler.removeCallbacksAndMessages(null);
         applySettings(); transientRetries = 0; engineRestarts = 0; pausedByFocusLoss = false; playing = true;
         if (!requestAudioFocus()) { playing = false; notifyState(); updateNotification(); return; }
-        PlaybackLog.event(this, "play from sentence " + current + " of " + sentences.size());
         startSilentPlayback(); promoteMediaSession(); updateMediaSession(); startService(new Intent(this, ReaderService.class)); startForeground(NOTIFICATION_ID, notification());
         speakCurrent();
     }
     public void pause() { pausedByFocusLoss = false; pause(true); }
     private void pause(boolean releaseFocus) {
-        if (playing) PlaybackLog.event(this, "pause at sentence " + current);
+        if (playing)
         pendingPlay = false; playing = false; activeUtterance = ""; utteranceSerial++; speechHandler.removeCallbacksAndMessages(null); if (tts != null) tts.stop(); stopSilentPlayback();
         restoreVolumeAfterFade(); if (releaseFocus) abandonAudioFocus(); savePosition(); if (!sentences.isEmpty()) updateNotification(); notifyState();
     }
@@ -622,7 +614,6 @@ public class ReaderService extends Service implements TextToSpeech.OnInitListene
 
     @Override public void onInit(int status) {
         ready = status == TextToSpeech.SUCCESS;
-        PlaybackLog.event(this, "tts ready=" + ready + " engine=" + (activeEngine.isEmpty() ? "system default" : activeEngine));
         if (!ready) { pendingPlay = false; error(getString(R.string.tts_unavailable)); notifyState(); stopIfIdle(); return; }
         applySettings(); refreshEngines();
         tts.setAudioAttributes(new AudioAttributes.Builder().setUsage(AudioAttributes.USAGE_MEDIA).setContentType(AudioAttributes.CONTENT_TYPE_SPEECH).build());
@@ -839,7 +830,7 @@ public class ReaderService extends Service implements TextToSpeech.OnInitListene
         return b.build();
     }
     private void updateNotification() { if (!sentences.isEmpty()) ((NotificationManager)getSystemService(NOTIFICATION_SERVICE)).notify(NOTIFICATION_ID, notification()); }
-    @Override public void onDestroy() { PlaybackLog.event(this, "service destroyed"); setArmed(false); speechHandler.removeCallbacksAndMessages(null); handler.removeCallbacksAndMessages(null); sleepHandler.removeCallbacksAndMessages(null); lifecycleHandler.removeCallbacksAndMessages(null); pause(); stopPreview(); flushVolumeRestore(); stopSilentPlayback(); if (audioManager != null) audioManager.unregisterAudioDeviceCallback(audioDeviceCallback); try { unregisterReceiver(becomingNoisyReceiver); } catch (IllegalArgumentException ignored) {} if (mediaSession != null) mediaSession.release(); if (tts != null) tts.shutdown(); super.onDestroy(); }
+    @Override public void onDestroy() { setArmed(false); speechHandler.removeCallbacksAndMessages(null); handler.removeCallbacksAndMessages(null); sleepHandler.removeCallbacksAndMessages(null); lifecycleHandler.removeCallbacksAndMessages(null); pause(); stopPreview(); flushVolumeRestore(); stopSilentPlayback(); if (audioManager != null) audioManager.unregisterAudioDeviceCallback(audioDeviceCallback); try { unregisterReceiver(becomingNoisyReceiver); } catch (IllegalArgumentException ignored) {} if (mediaSession != null) mediaSession.release(); if (tts != null) tts.shutdown(); super.onDestroy(); }
 
     public static class Range { public final int start, end; Range(int start, int end) { this.start = start; this.end = end; } }
 }

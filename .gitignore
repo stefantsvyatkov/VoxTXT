@@ -40,6 +40,6 @@ google-services.json
 # Screenshots from the phone, kept for looking at rather than for shipping.
 Screenshots/
 
-# The playback log the app writes to Downloads. It is a test artefact with the tester's device in it,
-# and it belongs in the folder while a fault is being chased, not in the history.
+# The playback log from the round of debugging in August 2026. The app no longer writes it, but the files
+# it left behind carry the testers' devices in them and have no business in the history.
 voxtxt-log.txt

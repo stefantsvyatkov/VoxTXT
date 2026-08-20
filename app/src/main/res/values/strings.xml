@@ -116,7 +116,4 @@
     <string name="notification_paused">Paused at sentence %1$d of %2$d</string>
     <string name="playback_channel">TXT reading</string>
     <string name="default_voice">System default</string>
-    <string name="log_events">Record a playback log</string>
-    <string name="share_log">Share the log</string>
-    <string name="log_empty">Nothing has been recorded yet. The log is written to %1$s.</string>
 </resources>

@@ -17,7 +17,6 @@ public class MediaButtonReceiver extends BroadcastReceiver {
         if (intent == null || !Intent.ACTION_MEDIA_BUTTON.equals(intent.getAction())) return;
         boolean armed = context.getSharedPreferences("reader_settings", Context.MODE_PRIVATE)
             .getBoolean(ReaderService.ARMED, false);
-        PlaybackLog.event(context, "media key received, armed=" + armed);
         if (!armed) return;
         Intent service = new Intent(context, ReaderService.class).setAction(Intent.ACTION_MEDIA_BUTTON);
         KeyEvent event = intent.getParcelableExtra(Intent.EXTRA_KEY_EVENT);
