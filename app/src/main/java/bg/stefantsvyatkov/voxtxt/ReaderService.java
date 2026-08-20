@@ -90,11 +90,20 @@ public class ReaderService extends Service implements TextToSpeech.OnInitListene
     private Voice cachedVoice;
     private String cachedVoiceName = "";
     private boolean sleepRewindAvailable, captureSleepStartOnPlay;
-    private int transientRetries, engineRestarts;
+    private int transientRetries, engineRestarts, interruptedRetries;
+    // How long the reading waits for an engine that somebody else is using. A screen reader sharing the
+    // same engine takes it for as long as it has something to say, and every attempt made while it talks is
+    // cut off in turn, so the count has to cover a long announcement rather than a hiccup.
+    private static final int MAX_INTERRUPTED_RETRIES = 25;
+    private static final long INTERRUPTED_WAIT_MS = 1200L;
+    // How long a sentence handed to the engine is given to start being spoken before it is treated as
+    // lost. Generous on purpose: a neural voice can take a second or two to produce its first sound, and
+    // re-sending a sentence that was merely slow costs nothing but its opening words.
+    private static final long SPEECH_START_TIMEOUT_MS = 5000L;
+    private boolean utteranceStarted;
     private boolean pausedByFocusLoss;
     private long utteranceSerial;
     private String activeUtterance = "";
-    private long utteranceStartedAt;
     // A tap on Previous or Next stops the engine and starts the next sentence. Tap again quickly and the
     // sentence just started is stopped in turn - so the reading is asked to start something it will not
     // finish, over and over. Waiting out the taps means the engine is asked once, for the sentence actually
@@ -208,8 +217,12 @@ public class ReaderService extends Service implements TextToSpeech.OnInitListene
         if (session == null) return;
         try { session.setActive(false); session.release(); } catch (Exception ignored) {}
     }
+    // Kept with what the reader knows about files, not with the settings. The settings travel in the Android
+    // backup, and this flag would travel with them: a new phone would come up believing a book was open,
+    // and the first press of a headset button would raise a notification for two seconds over nothing. What
+    // is open is not a preference, and it is rebuilt the moment a document is loaded anyway.
     private void setArmed(boolean armed) {
-        getSharedPreferences("reader_settings", MODE_PRIVATE).edit().putBoolean(ARMED, armed).apply();
+        getSharedPreferences("reader_documents", MODE_PRIVATE).edit().putBoolean(ARMED, armed).apply();
     }
 
     public void setListener(Listener value) { listener = value; notifyState(); }
@@ -264,14 +277,13 @@ public class ReaderService extends Service implements TextToSpeech.OnInitListene
         // a moment, so pressing Play inside that moment used to speak the sentence, then speak it again
         // when the waiting start came round.
         speechHandler.removeCallbacksAndMessages(null);
-        applySettings(); transientRetries = 0; engineRestarts = 0; pausedByFocusLoss = false; playing = true;
+        applySettings(); transientRetries = 0; engineRestarts = 0; interruptedRetries = 0; pausedByFocusLoss = false; playing = true;
         if (!requestAudioFocus()) { playing = false; notifyState(); updateNotification(); return; }
         startSilentPlayback(); promoteMediaSession(); updateMediaSession(); startService(new Intent(this, ReaderService.class)); startForeground(NOTIFICATION_ID, notification());
         speakCurrent();
     }
     public void pause() { pausedByFocusLoss = false; pause(true); }
     private void pause(boolean releaseFocus) {
-        if (playing)
         pendingPlay = false; playing = false; activeUtterance = ""; utteranceSerial++; speechHandler.removeCallbacksAndMessages(null); if (tts != null) tts.stop(); stopSilentPlayback();
         restoreVolumeAfterFade(); if (releaseFocus) abandonAudioFocus(); savePosition(); if (!sentences.isEmpty()) updateNotification(); notifyState();
     }
@@ -370,18 +382,18 @@ public class ReaderService extends Service implements TextToSpeech.OnInitListene
         if (!playing || current >= sentences.size()) { pause(); return; }
         if (!ready || tts == null) { pendingPlay = true; return; }
         Range range = sentences.get(current);
-        activeUtterance = "sentence-" + current + "-" + (++utteranceSerial); String utterance = activeUtterance;
-        utteranceStartedAt = SystemClock.elapsedRealtime();
+        activeUtterance = "sentence-" + current + "-" + (++utteranceSerial); String utterance = activeUtterance; utteranceStarted = false;
         android.content.SharedPreferences p = getSharedPreferences("reader_settings", MODE_PRIVATE);
         Bundle parameters = new Bundle(); parameters.putFloat(TextToSpeech.Engine.KEY_PARAM_VOLUME, p.getInt(setting("volume_percent"), 50) / 100f);
         addVoiceParam(parameters, p.getString(voicePreferenceKey(profile, activeEngine), ""));
         int result = tts.speak(text.substring(range.start, range.end).trim(), TextToSpeech.QUEUE_FLUSH, parameters, utterance);
-        if (result == TextToSpeech.ERROR) { pause(); error(getString(R.string.tts_error)); }
+        if (result == TextToSpeech.ERROR) { waitForEngine(utterance); return; }
+        speechHandler.postDelayed(() -> sentenceNeverStarted(utterance), SPEECH_START_TIMEOUT_MS);
         notifyState(); updateNotification();
     }
     private void finishCurrentSentence(String utterance) {
         if (!playing || !utterance.equals(activeUtterance)) return;
-        transientRetries = 0; engineRestarts = 0; activeUtterance = ""; current++; savePosition();
+        transientRetries = 0; engineRestarts = 0; interruptedRetries = 0; activeUtterance = ""; current++; savePosition();
         if (current >= sentences.size()) { current = Math.max(0, sentences.size() - 1); reachedEnd = true; announceEnd(); return; }
         int delay = getSharedPreferences("reader_settings", MODE_PRIVATE).getInt(setting("sentence_pause"), 0);
         speechHandler.postDelayed(ReaderService.this::speakCurrent, delay);
@@ -398,6 +410,38 @@ public class ReaderService extends Service implements TextToSpeech.OnInitListene
         Bundle parameters = new Bundle(); parameters.putFloat(TextToSpeech.Engine.KEY_PARAM_VOLUME, p.getInt(setting("volume_percent"), 50) / 100f);
         addVoiceParam(parameters, p.getString(voicePreferenceKey(profile, activeEngine), ""));
         if (tts == null || tts.speak(getString(R.string.end_of_text), TextToSpeech.QUEUE_FLUSH, parameters, END_UTTERANCE) == TextToSpeech.ERROR) pause();
+    }
+    // Somebody else has the engine: it cut our sentence off, it refused to take the next one, or it took
+    // the sentence and never spoke it. The three arrive differently and mean the same thing, so they get the
+    // same answer - the sentence is said again once the engine is free. Android gives no way to pick a
+    // sentence up in the middle, so it starts over, and no way to ask whether the engine is free either, so
+    // the only thing to do is wait a moment and try, which is what a person would do.
+    //
+    // The patience is what matters. Three attempts over three seconds meant that a screen reader with a long
+    // announcement outlasted the reading, and the book gave up for good with an error about the voice having
+    // failed. It had not failed; it was busy. Each attempt now waits a little longer than the one before it:
+    // fixed short retries fire straight into the middle of whatever the screen reader is saying, and a phone
+    // being swiped across gives it a great deal to say.
+    private void waitForEngine(String utterance) {
+        if (!utterance.equals(activeUtterance)) return;
+        activeUtterance = "";
+        if (!playing) return;
+        if (interruptedRetries++ < MAX_INTERRUPTED_RETRIES) {
+            speechHandler.postDelayed(ReaderService.this::speakCurrent, Math.min(INTERRUPTED_WAIT_MS + interruptedRetries * 300L, 4000L));
+            return;
+        }
+        pause(); error(getString(R.string.tts_error));
+    }
+    // Taking a sentence and then never speaking it is the worst of the three, because it is reported as
+    // nothing at all: no start, no end, no stop, no error. Nothing was scheduled and nothing was coming, and
+    // the reading stood there in silence with the player still showing that it was reading; only closing the
+    // book got out of it. The engine cannot be asked about this, so the sentence is timed instead - if it has
+    // not begun to sound by now it was lost, and it is sent again. This rests on the engine reporting the
+    // start of a sentence. If a sentence is ever heard beginning over and over at a steady interval, that
+    // report is what has gone missing.
+    private void sentenceNeverStarted(String utterance) {
+        if (!playing || utteranceStarted || !utterance.equals(activeUtterance)) return;
+        waitForEngine(utterance);
     }
     private void retryCurrentSentence(String utterance) {
         if (!utterance.equals(activeUtterance)) return;
@@ -614,15 +658,17 @@ public class ReaderService extends Service implements TextToSpeech.OnInitListene
 
     @Override public void onInit(int status) {
         ready = status == TextToSpeech.SUCCESS;
-        if (!ready) { pendingPlay = false; error(getString(R.string.tts_unavailable)); notifyState(); stopIfIdle(); return; }
+        // Whatever happens, the reading must not be left claiming to read. A connection that fails to
+        // come up while a book is running would otherwise leave the player showing Pause over silence,
+        // with nothing to press and nothing coming. Stopping properly puts Play back where it belongs.
+        if (!ready) { pause(); error(getString(R.string.tts_unavailable)); stopIfIdle(); return; }
         applySettings(); refreshEngines();
         tts.setAudioAttributes(new AudioAttributes.Builder().setUsage(AudioAttributes.USAGE_MEDIA).setContentType(AudioAttributes.CONTENT_TYPE_SPEECH).build());
         tts.setOnUtteranceProgressListener(new UtteranceProgressListener() {
-            @Override public void onStart(String id) { handler.post(() -> { if (id.equals(activeUtterance)) refreshSilentPlaybackPriority(); }); }
+            @Override public void onStart(String id) { handler.post(() -> { if (id.equals(activeUtterance)) { utteranceStarted = true; refreshSilentPlaybackPriority(); } }); }
             @Override public void onDone(String id) { handler.post(() -> { if (isPreview(id)) previewFinished(id); else if (END_UTTERANCE.equals(id)) pause(); else finishCurrentSentence(id); }); }
-            @Override public void onStop(String id, boolean interrupted) { handler.post(() -> { if (isPreview(id)) { previewStopped(id, interrupted); return; } if (END_UTTERANCE.equals(id)) { pause(); return; } if (playing && interrupted && id.equals(activeUtterance)
-                    && SystemClock.elapsedRealtime() - utteranceStartedAt > SEEK_SETTLE_MS * 2) retryCurrentSentence(id); }); }
-            @Override public void onError(String id) { handler.post(() -> { if (isPreview(id)) previewFinished(id); else if (END_UTTERANCE.equals(id)) pause(); else retryCurrentSentence(id); }); }
+            @Override public void onStop(String id, boolean interrupted) { handler.post(() -> { if (isPreview(id)) { previewStopped(id, interrupted); return; } if (END_UTTERANCE.equals(id)) { pause(); return; } if (playing && id.equals(activeUtterance)) waitForEngine(id); }); }
+            @Override public void onError(String id) { handler.post(() -> { if (isPreview(id)) previewFinished(id); else if (END_UTTERANCE.equals(id)) pause(); else if (interruptedRetries > 0) waitForEngine(id); else retryCurrentSentence(id); }); }
         });
         notifyState(); if (pendingPlay) { pendingPlay = false; play(); }
     }

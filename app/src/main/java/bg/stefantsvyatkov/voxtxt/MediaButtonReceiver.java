@@ -15,7 +15,7 @@ import android.view.KeyEvent;
 public class MediaButtonReceiver extends BroadcastReceiver {
     @Override public void onReceive(Context context, Intent intent) {
         if (intent == null || !Intent.ACTION_MEDIA_BUTTON.equals(intent.getAction())) return;
-        boolean armed = context.getSharedPreferences("reader_settings", Context.MODE_PRIVATE)
+        boolean armed = context.getSharedPreferences("reader_documents", Context.MODE_PRIVATE)
             .getBoolean(ReaderService.ARMED, false);
         if (!armed) return;
         Intent service = new Intent(context, ReaderService.class).setAction(Intent.ACTION_MEDIA_BUTTON);

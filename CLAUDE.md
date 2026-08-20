@@ -72,7 +72,8 @@ migration. Renaming any of them silently resets everyone's voice and speed.
 **Never change the stored type of a key. Use a new name instead.** `keep_screen_on` was a boolean for one
 build and then became a word; reading a string from a boolean throws, and the app crashed on opening Options
 for anyone who had the earlier build. It now stores under `keep_screen`, and `MainActivity.onCreate` holds a
-two-line cleanup of the old key that should be deleted in Beta 5.
+cleanup of that key and of `player_armed`, to be deleted in Beta 6 - a cleanup has to ship in the release
+that meets the phones carrying the old key, and only then can it go.
 
 A settings file never tidies itself, and `reader_settings` is included in the Android backup, so an orphan key
 travels to every future phone. `reader_documents`, `book_positions` and `sleep_rewind_state` are excluded from
@@ -94,6 +95,15 @@ the backup on purpose: the permissions to open those files are not restored, so 
   backstop; leaving it running once turned a book into one repeated word.
 - **A step of the File progress slider must change the sentence.** In a twelve-sentence article one percent is
   worth less than one sentence, so rounding returned the same sentence and the slider looked stuck.
+- **The engine belongs to whoever asked last, and losing it is not a failure.** A screen reader on the same
+  engine takes the sentence away, and it arrives in three shapes: a stop, a refusal from `speak()`, or - the
+  nasty one - the sentence being accepted and then never spoken, reported as nothing at all. All three go to
+  `waitForEngine`, which waits and says the sentence again, patiently enough to outlast a long announcement.
+  Treating any of them as a broken engine is what made the book stop dead with an error about the voice.
+- **Nothing may leave `playing` true with no sentence speaking and nothing scheduled.** That state is silent,
+  shows Pause over the silence, and only closing the book escapes it. It is the reason `speakCurrent` arms a
+  timer on every sentence and `onInit` pauses on failure. When something in playback is changed, the question
+  to ask of every path out is what is scheduled after it.
 - **Leaving a subpage never questions what is open.** `closeRecent` used to ask whether the open document was
   still in the recent list, which threw away web pages and then shared text. Removing a book from the list
   already closes it if it is the one being read; nothing else needs asking.

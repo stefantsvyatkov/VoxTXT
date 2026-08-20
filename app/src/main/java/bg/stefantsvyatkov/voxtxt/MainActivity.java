@@ -159,11 +159,13 @@ public class MainActivity extends Activity implements ReaderService.Listener {
     };
 
     @Override public void onCreate(Bundle state) {
-        // One-off tidying. "keep_screen_on" held a yes or no for a single build, before the setting grew to
-        // four states and moved to a name of its own. Nothing reads the old one any more, and a settings file
-        // never clears itself - left alone it would ride the backup onto every future phone. Delete these two
-        // lines in Beta 5, when no phone still carries it.
-        if (getSettings().contains("keep_screen_on")) getSettings().edit().remove("keep_screen_on").apply();
+        // One-off tidying of two keys nothing reads any more. "keep_screen_on" held a yes or no for a single
+        // build, before the setting grew to four states and moved to a name of its own; "player_armed" said
+        // whether a book was open, which is not a preference and has moved to where the open documents are
+        // kept. A settings file never clears itself, and this one travels in the backup, so left alone either
+        // would ride onto every future phone. Delete these lines in Beta 6: Beta 5 is the release that meets
+        // the phones still carrying them.
+        if (getSettings().contains("keep_screen_on") || getSettings().contains("player_armed")) getSettings().edit().remove("keep_screen_on").remove("player_armed").apply();
         applySavedLanguage();
         String selectedTheme = getSharedPreferences("reader_settings", MODE_PRIVATE).getString("theme", "system");
         if ("light".equals(selectedTheme)) setTheme(R.style.AppThemeLight); else if ("dark".equals(selectedTheme)) setTheme(R.style.AppThemeDark);
