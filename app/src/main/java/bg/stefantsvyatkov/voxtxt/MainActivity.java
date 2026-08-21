@@ -35,6 +35,9 @@ public class MainActivity extends Activity implements ReaderService.Listener {
     // How much of what came before is left showing above the sentence being read. Counted in lines and
     // not in points, so the top edge always falls between two lines instead of through one.
     private static final int LINES_ABOVE_SENTENCE = 2;
+    // How much taller the name of the book is drawn than it needs to be, so that what is left of the reading
+    // comes out at a whole number of lines. See fitWholeLines().
+    private int lineFitExtra;
     private static final int FAST_SEEK_DEFAULT_MS = 400, FAST_SEEK_MIN_MS = 200, FAST_SEEK_MAX_MS = 600;
     private static final long MAX_FAST_SEEK_MS = 60_000L;
     // Off, while a document is being read, while a web page is, or both.
@@ -238,7 +241,9 @@ public class MainActivity extends Activity implements ReaderService.Listener {
         body = label("", 20, false); body.setTextSize(getSettings().getInt("font_size", 23)); body.setTextIsSelectable(false); body.setLongClickable(false); body.setLineSpacing(0, 1.3f); body.setPadding(pad, 0, pad, 0);
         body.setBackgroundColor(appColor(R.color.panel_bg));
         scroll = new LockedScrollView(this); scroll.setFillViewport(true); scroll.addView(body, new ScrollView.LayoutParams(-1, -2));
-        LinearLayout.LayoutParams content = new LinearLayout.LayoutParams(-1, 0, 1); content.setMargins(0, dp(24), 0, dp(24)); root.addView(scroll, content);
+        LinearLayout.LayoutParams content = new LinearLayout.LayoutParams(-1, 0, 1); content.setMargins(0, dp(16), 0, dp(16)); root.addView(scroll, content);
+        lineFitExtra = 0;
+        scroll.addOnLayoutChangeListener((v, l, t, r2, b2, ol, ot, or2, ob) -> scroll.post(this::fitWholeLines));
 
         LinearLayout playerPanel = new LinearLayout(this); playerPanel.setOrientation(LinearLayout.VERTICAL); playerPanel.setGravity(Gravity.BOTTOM); playerPanel.setPadding(dp(12), 0, dp(12), 0); playerPanel.setBackgroundColor(appColor(R.color.panel_bg));
         TextView progressValue = addSliderHeader(playerPanel, R.string.book_progress, 17, 0);
@@ -266,21 +271,30 @@ public class MainActivity extends Activity implements ReaderService.Listener {
             // that was no longer wanted, not the book.
             if (reader.sleepRemainingMillis() > 0) { getSettings().edit().putInt("sleep_choice", 0).apply(); reader.setSleepMinutes(0); updateSleepRow(); }
             else reader.rewindCompletedSleepTimer();
-        }); sleepRewindButton.setVisibility(View.INVISIBLE);
+        }); sleepRewindButton.setVisibility(View.GONE);
         LinearLayout.LayoutParams sliderRow = new LinearLayout.LayoutParams(-1, dp(48)); sliderRow.setMargins(0, dp(-14), 0, 0);
         playerPanel.addView(bookProgress, sliderRow);
         attachSeekButton(previous, -1);
         play.setOnClickListener(v -> { if (reader == null) return; cancelAutomaticResume(true); if (reader.isPlaying()) reader.pause(); else reader.play(); });
         attachSeekButton(next, 1);
         addPlayerButton(playerButtons, voiceButton); addPlayerButton(playerButtons, previous); addPlayerButton(playerButtons, play); addPlayerButton(playerButtons, next); addPlayerButton(playerButtons, sleepButton);
-        LinearLayout.LayoutParams buttonRow = new LinearLayout.LayoutParams(-1, dp(80)); buttonRow.setMargins(0, dp(-8), 0, 0);
+        LinearLayout.LayoutParams buttonRow = new LinearLayout.LayoutParams(-1, dp(64)); buttonRow.setMargins(0, dp(-6), 0, 0);
         playerPanel.addView(playerButtons, buttonRow);
         LinearLayout.LayoutParams rewindRow = new LinearLayout.LayoutParams(-1, dp(56)); rewindRow.setMargins(0, dp(16), 0, 0);
         playerPanel.addView(sleepRewindButton, rewindRow);
-        // The panel takes the height its own rows need instead of a number fixed in advance. The row for the
-        // timer button keeps its place whether or not the button is showing, so nothing moves when it appears,
-        // and a larger interface text size now grows the panel rather than being cut off by it.
-        LinearLayout.LayoutParams panelParams = new LinearLayout.LayoutParams(-1, -2); panelParams.setMargins(0, 0, 0, dp(4)); root.addView(playerPanel, panelParams); setContentView(root); setTitle(getString(R.string.app_name)); applyScreenSetting(); updateControls(); if (reader != null) showCurrent(reader.getCurrent(), reader.getCount()); root.requestApplyInsets();
+        // The panel takes the height its own rows need instead of a number fixed in advance, so it grows with
+        // the timer button and with a larger interface text size rather than cutting either off.
+        LinearLayout.LayoutParams panelParams = new LinearLayout.LayoutParams(-1, -2); panelParams.setMargins(0, 0, 0, 0); root.addView(playerPanel, panelParams); setContentView(root); setTitle(getString(R.string.app_name)); applyScreenSetting(); updateControls(); if (reader != null) showCurrent(reader.getCurrent(), reader.getCount()); root.requestApplyInsets();
+    }
+    private void fitWholeLines() {
+        if (scroll == null || body == null) return;
+        int lineHeight = body.getLineHeight(), height = scroll.getHeight() + lineFitExtra;
+        if (lineHeight <= 0 || height <= lineHeight) return;
+        int extra = height % lineHeight;
+        if (extra == lineFitExtra) return;
+        lineFitExtra = extra;
+        TextView carrier = title != null && title.getVisibility() == View.VISIBLE ? title : appHeading;
+        if (carrier != null) carrier.setPadding(0, 0, 0, dp(8) + extra);
     }
     private TextView label(String value, float sp, boolean bold) { TextView v = new TextView(this); v.setText(value); v.setTextSize(uiSize(sp)); v.setTextColor(appColor(R.color.text_primary)); if (bold) v.setTypeface(v.getTypeface(), android.graphics.Typeface.BOLD); return v; }
     // The plain grey the platform gives a button is what made the app look like a form. A blue one reads as
@@ -296,8 +310,8 @@ public class MainActivity extends Activity implements ReaderService.Listener {
     // The five buttons under the player, whose whole meaning is the shape on them. Their symbols are drawn
     // as large as the button rather than at the size the drawing file happens to declare. Nothing else is
     // built this way: the bin on a list row is Android's own, at Android's own size.
-    private ImageButton largeIconButton(int icon, int description) { ImageButton b = imageButton(icon, description); b.setScaleType(ImageView.ScaleType.FIT_CENTER); b.setPadding(dp(8), dp(8), dp(8), dp(8)); return b; }
-    private void addPlayerButton(LinearLayout row, ImageButton button) { FrameLayout column = new FrameLayout(this); column.addView(button, new FrameLayout.LayoutParams(dp(70), dp(76), Gravity.CENTER)); row.addView(column, new LinearLayout.LayoutParams(0, dp(80), 1)); }
+    private ImageButton largeIconButton(int icon, int description) { ImageButton b = imageButton(icon, description); b.setScaleType(ImageView.ScaleType.FIT_CENTER); b.setPadding(dp(8), dp(5), dp(8), dp(5)); return b; }
+    private void addPlayerButton(LinearLayout row, ImageButton button) { FrameLayout column = new FrameLayout(this); column.addView(button, new FrameLayout.LayoutParams(dp(70), dp(64), Gravity.CENTER)); row.addView(column, new LinearLayout.LayoutParams(0, dp(64), 1)); }
     private Button compactButton(String value) { Button b = button(value); b.setTextSize(uiSize(17)); b.setMinWidth(0); b.setMinimumWidth(0); b.setPadding(dp(12), 0, dp(12), 0); return b; }
     // The platform draws a slider as a hairline. At the sizes this app uses everywhere else it looks like a
     // scratch on the screen rather than a control, and for someone who makes out shapes but not detail it is
@@ -606,7 +620,7 @@ public class MainActivity extends Activity implements ReaderService.Listener {
             sleepRewindButton.setVisibility(View.VISIBLE);
             return;
         }
-        sleepRewindButton.setText(""); sleepRewindButton.setVisibility(View.INVISIBLE);
+        sleepRewindButton.setText(""); sleepRewindButton.setVisibility(View.GONE);
     }
     @Override public void onPlaybackError(String message) { runOnUiThread(() -> toast(message)); }
     private void showCurrent(int index, int count) {
