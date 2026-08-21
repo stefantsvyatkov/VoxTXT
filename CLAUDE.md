@@ -53,6 +53,37 @@ keep the contrast where it is.
 Already weighed and rejected: Crux for metadata (drags in OkHttp, coroutines and a JSON library), Apache POI
 for legacy .doc (about 5 MB plus an XML-parser workaround), PdfBox-Android for PDF.
 
+## The visual system
+
+**Ask the platform before writing a number down.** `systemDimension` and `systemTextSize` in `MainActivity`
+read the theme, and four measures come from there: the height of a list row and of a menu row, the side
+padding of a list row, the padding inside a dialog, and the size of text that names a control. The values
+Android returns are the ones this app already used, so nothing moved when they were converted - the point is
+that they now follow the phone rather than a note made here once.
+
+The same goes for behaviour: dialogs are the platform's `AlertDialog` with its own background and its own
+buttons, the More menu is `setItems`, and the touch highlight on a row is `selectableItemBackground`. Two of
+these were questioned and the user chose the platform both times - the grey dialog background and the small
+capitalised CLOSE stay as Android draws them.
+
+**Three departures, each deliberate.** Every button is 56dp where the platform says 48; the player row is
+80dp with 40dp symbols, which the platform has no opinion about; and the text runs on five steps - 28 for the
+app name, 24 for a heading, 20 for a file name or a field, the platform's medium for anything that names a
+control, and one step below it for a button sharing its row - where the platform offers three. All three
+exist because the system measures are drawn for someone who can read the screen.
+
+**Spacing is 4, 8, 16 and 24 and nothing else**, which is the Material scale. Space is given at the top of a
+control and never at the bottom: giving it at both ends is what left one pair of controls six points apart
+and another twenty-two. Two buttons standing one on the other touch - the gap belongs between different
+kinds of thing, not between two of the same thing.
+
+**A slider is drawn at the thickness it is given.** `thicken` pins the height of both layers, because a
+progress drawable is otherwise stretched to fill its row, and the same two lines of code produced a fatter
+bar on the player than in Options.
+
+**The reading scrolls in whole lines.** Backing off a fixed number of points left a fraction of a line
+showing along the top edge; `LINES_ABOVE_SENTENCE` counts lines instead.
+
 ## Do not resurrect
 
 Features that existed, were built, and were removed after the user tried them. Re-proposing them is a step

@@ -32,6 +32,9 @@ public class MainActivity extends Activity implements ReaderService.Listener {
     // to be padded by however long redrawing the document took - roughly 150 ms on a full book. Redrawing is
     // cheap now and the interval is honoured exactly, which made the old default of 200 ms feel twice as
     // fast. This is the value that gives the pace the setting always seemed to have.
+    // How much of what came before is left showing above the sentence being read. Counted in lines and
+    // not in points, so the top edge always falls between two lines instead of through one.
+    private static final int LINES_ABOVE_SENTENCE = 2;
     private static final int FAST_SEEK_DEFAULT_MS = 400, FAST_SEEK_MIN_MS = 200, FAST_SEEK_MAX_MS = 600;
     private static final long MAX_FAST_SEEK_MS = 60_000L;
     // Off, while a document is being read, while a web page is, or both.
@@ -217,28 +220,32 @@ public class MainActivity extends Activity implements ReaderService.Listener {
         LinearLayout root = new LinearLayout(this); root.setOrientation(LinearLayout.VERTICAL); root.setPadding(pad, dp(10), pad, dp(12));
         root.setOnApplyWindowInsetsListener((v, insets) -> { v.setPadding(pad, insets.getSystemWindowInsetTop() + dp(10), pad, insets.getSystemWindowInsetBottom() + dp(12)); return insets; });
         appRoot = root; root.setBackgroundColor(appColor(R.color.window_bg));
-        appHeading = label(getString(R.string.app_name), 27, true); appHeading.setPadding(0, 0, 0, dp(8)); if (Build.VERSION.SDK_INT >= 28) appHeading.setAccessibilityHeading(true);
+        appHeading = label(getString(R.string.app_name), 28, true); appHeading.setPadding(0, 0, 0, dp(8)); if (Build.VERSION.SDK_INT >= 28) appHeading.setAccessibilityHeading(true);
         root.addView(appHeading, new LinearLayout.LayoutParams(-1, -2));
-        title = label(currentName, 22, true); title.setMaxLines(3); title.setEllipsize(null); title.setPadding(0, 0, 0, currentName.isEmpty() ? 0 : dp(8)); title.setVisibility(currentName.isEmpty() ? View.GONE : View.VISIBLE);
+        title = label(currentName, 20, true); title.setMaxLines(3); title.setEllipsize(null); title.setPadding(0, 0, 0, currentName.isEmpty() ? 0 : dp(8)); title.setVisibility(currentName.isEmpty() ? View.GONE : View.VISIBLE);
         root.addView(title, new LinearLayout.LayoutParams(-1, -2));
-        Button open = button("＋  " + getString(R.string.open_txt)); open.setTextSize(uiSize(19)); open.setOnClickListener(v -> chooseFile()); root.addView(open, new LinearLayout.LayoutParams(-1, dp(60)));
+        Button open = button("＋  " + getString(R.string.open_txt)); open.setOnClickListener(v -> chooseFile()); root.addView(open, new LinearLayout.LayoutParams(-1, dp(56)));
         LinearLayout header = new LinearLayout(this); header.setGravity(Gravity.CENTER_VERTICAL);
         Button recent = compactButton("☰ " + getString(R.string.recent)); recent.setOnClickListener(v -> showRecent());
         Button settings = compactButton("⚙  " + getString(R.string.more)); settings.setContentDescription(getString(R.string.more)); settings.setOnClickListener(v -> showMoreMenu());
-        recent.setTextSize(uiSize(17)); settings.setTextSize(uiSize(17)); header.addView(recent, new LinearLayout.LayoutParams(0, dp(52), 1)); header.addView(settings, new LinearLayout.LayoutParams(0, dp(52), 1));
+        header.addView(recent, new LinearLayout.LayoutParams(0, dp(56), 1)); header.addView(settings, new LinearLayout.LayoutParams(0, dp(56), 1));
         root.addView(header);
         LinearLayout sentenceRow = new LinearLayout(this); sentenceRow.setGravity(Gravity.CENTER_VERTICAL);
-        status = label(getString(R.string.welcome), 17, false); status.setTextColor(appColor(R.color.text_secondary)); status.setPadding(0, dp(7), 0, dp(8)); sentenceRow.addView(status, new LinearLayout.LayoutParams(0, -2, 1));
-        Button jump = compactButton(getString(R.string.go_to_sentence)); jump.setTextSize(uiSize(16)); jump.setOnClickListener(v -> showGoToSentenceDialog()); sentenceRow.addView(jump, new LinearLayout.LayoutParams(-2, dp(52))); root.addView(sentenceRow);
+        status = label(getString(R.string.welcome), labelTextSize(), false); status.setTextColor(appColor(R.color.text_secondary)); status.setPadding(0, dp(7), 0, dp(8)); sentenceRow.addView(status, new LinearLayout.LayoutParams(0, -2, 1));
+        Button jump = compactButton(getString(R.string.go_to_sentence)); jump.setOnClickListener(v -> showGoToSentenceDialog()); sentenceRow.addView(jump, new LinearLayout.LayoutParams(-2, dp(56)));
+        root.addView(sentenceRow);
 
-        body = label("", 20, false); body.setTextSize(getSettings().getInt("font_size", 23)); body.setTextIsSelectable(false); body.setLongClickable(false); body.setLineSpacing(0, 1.3f); body.setPadding(pad, pad, pad, pad);
+        body = label("", 20, false); body.setTextSize(getSettings().getInt("font_size", 23)); body.setTextIsSelectable(false); body.setLongClickable(false); body.setLineSpacing(0, 1.3f); body.setPadding(pad, 0, pad, 0);
         body.setBackgroundColor(appColor(R.color.panel_bg));
         scroll = new LockedScrollView(this); scroll.setFillViewport(true); scroll.addView(body, new ScrollView.LayoutParams(-1, -2));
-        LinearLayout.LayoutParams content = new LinearLayout.LayoutParams(-1, 0, 1); content.setMargins(0, dp(10), 0, dp(10)); root.addView(scroll, content);
+        LinearLayout.LayoutParams content = new LinearLayout.LayoutParams(-1, 0, 1); content.setMargins(0, dp(24), 0, dp(24)); root.addView(scroll, content);
 
         LinearLayout playerPanel = new LinearLayout(this); playerPanel.setOrientation(LinearLayout.VERTICAL); playerPanel.setGravity(Gravity.BOTTOM); playerPanel.setPadding(dp(12), 0, dp(12), 0); playerPanel.setBackgroundColor(appColor(R.color.panel_bg));
         TextView progressValue = addSliderHeader(playerPanel, R.string.book_progress, 17, 0);
         bookProgress = new BookProgressSeekBar(this); thicken(bookProgress);
+        // The bar is centred in a row kept tall enough to find with a finger, and the row is then pulled
+        // into place with margins. Making the row itself short would have shrunk what can be touched.
+        bookProgress.setPadding(bookProgress.getPaddingLeft(), 0, bookProgress.getPaddingRight(), 0);
         sliderValues.put(bookProgress, progressValue);
         bookProgress.setOnSeekBarChangeListener(new SeekBar.OnSeekBarChangeListener() {
             public void onStartTrackingTouch(SeekBar seekBar) { draggingBookProgress = true; resumeAfterProgressSeek = reader != null && reader.isPlaying(); if (resumeAfterProgressSeek) reader.pause(); }
@@ -249,7 +256,7 @@ public class MainActivity extends Activity implements ReaderService.Listener {
             public void onProgressChanged(SeekBar seekBar, int progress, boolean fromUser) { updateBookProgressDescription(progress); if (fromUser && !updatingBookProgress && !draggingBookProgress) seekToBookPercent(progress, false); }
         });
         LinearLayout playerButtons = new LinearLayout(this); playerButtons.setGravity(Gravity.CENTER);
-        voiceButton = imageButton(R.drawable.ic_voice, R.string.choose_voice); previous = imageButton(R.drawable.ic_previous, R.string.previous_sentence); play = imageButton(R.drawable.ic_play, R.string.play_sentence); next = imageButton(R.drawable.ic_next, R.string.next_sentence); sleepButton = imageButton(R.drawable.ic_sleep, R.string.open_sleep_timer); sleepRewindButton = button("");
+        voiceButton = largeIconButton(R.drawable.ic_voice, R.string.choose_voice); previous = largeIconButton(R.drawable.ic_previous, R.string.previous_sentence); play = largeIconButton(R.drawable.ic_play, R.string.play_sentence); next = largeIconButton(R.drawable.ic_next, R.string.next_sentence); sleepButton = largeIconButton(R.drawable.ic_sleep, R.string.open_sleep_timer); sleepRewindButton = button("");
         // The page opens on the settings that belong to what is open right now, which is nearly always the
         // set the reader came to change.
         voiceButton.setOnClickListener(v -> { pendingVoice.clear(); showVoiceSettings(fromWeb ? WEB_PROFILE : ""); }); sleepButton.setOnClickListener(v -> showSleepDialog());
@@ -260,28 +267,38 @@ public class MainActivity extends Activity implements ReaderService.Listener {
             if (reader.sleepRemainingMillis() > 0) { getSettings().edit().putInt("sleep_choice", 0).apply(); reader.setSleepMinutes(0); updateSleepRow(); }
             else reader.rewindCompletedSleepTimer();
         }); sleepRewindButton.setVisibility(View.INVISIBLE);
-        playerPanel.addView(bookProgress, new LinearLayout.LayoutParams(-1, dp(52)));
+        LinearLayout.LayoutParams sliderRow = new LinearLayout.LayoutParams(-1, dp(48)); sliderRow.setMargins(0, dp(-14), 0, 0);
+        playerPanel.addView(bookProgress, sliderRow);
         attachSeekButton(previous, -1);
         play.setOnClickListener(v -> { if (reader == null) return; cancelAutomaticResume(true); if (reader.isPlaying()) reader.pause(); else reader.play(); });
         attachSeekButton(next, 1);
         addPlayerButton(playerButtons, voiceButton); addPlayerButton(playerButtons, previous); addPlayerButton(playerButtons, play); addPlayerButton(playerButtons, next); addPlayerButton(playerButtons, sleepButton);
-        playerPanel.addView(playerButtons, new LinearLayout.LayoutParams(-1, dp(64)));
-        playerPanel.addView(sleepRewindButton, new LinearLayout.LayoutParams(-1, dp(58)));
-        LinearLayout.LayoutParams panelParams = new LinearLayout.LayoutParams(-1, dp(200)); panelParams.setMargins(0, dp(4), 0, dp(4)); root.addView(playerPanel, panelParams); setContentView(root); setTitle(getString(R.string.app_name)); applyScreenSetting(); updateControls(); if (reader != null) showCurrent(reader.getCurrent(), reader.getCount()); root.requestApplyInsets();
+        LinearLayout.LayoutParams buttonRow = new LinearLayout.LayoutParams(-1, dp(80)); buttonRow.setMargins(0, dp(-8), 0, 0);
+        playerPanel.addView(playerButtons, buttonRow);
+        LinearLayout.LayoutParams rewindRow = new LinearLayout.LayoutParams(-1, dp(56)); rewindRow.setMargins(0, dp(16), 0, 0);
+        playerPanel.addView(sleepRewindButton, rewindRow);
+        // The panel takes the height its own rows need instead of a number fixed in advance. The row for the
+        // timer button keeps its place whether or not the button is showing, so nothing moves when it appears,
+        // and a larger interface text size now grows the panel rather than being cut off by it.
+        LinearLayout.LayoutParams panelParams = new LinearLayout.LayoutParams(-1, -2); panelParams.setMargins(0, 0, 0, dp(4)); root.addView(playerPanel, panelParams); setContentView(root); setTitle(getString(R.string.app_name)); applyScreenSetting(); updateControls(); if (reader != null) showCurrent(reader.getCurrent(), reader.getCount()); root.requestApplyInsets();
     }
-    private TextView label(String value, int sp, boolean bold) { TextView v = new TextView(this); v.setText(value); v.setTextSize(uiSize(sp)); v.setTextColor(appColor(R.color.text_primary)); if (bold) v.setTypeface(v.getTypeface(), android.graphics.Typeface.BOLD); return v; }
+    private TextView label(String value, float sp, boolean bold) { TextView v = new TextView(this); v.setText(value); v.setTextSize(uiSize(sp)); v.setTextColor(appColor(R.color.text_primary)); if (bold) v.setTypeface(v.getTypeface(), android.graphics.Typeface.BOLD); return v; }
     // The plain grey the platform gives a button is what made the app look like a form. A blue one reads as
     // something to press without any of the contrast being given up: the lettering stays at nine to one
     // against its own background in both themes, and the button stands as far from the page behind it.
     private Button button(String value) {
-        Button b = new Button(this); b.setText(value); b.setTextSize(uiSize(17)); b.setAllCaps(false);
+        Button b = new Button(this); b.setText(value); b.setTextSize(uiSize(labelTextSize())); b.setAllCaps(false);
         b.setBackgroundTintList(android.content.res.ColorStateList.valueOf(appColor(R.color.button_bg)));
         b.setTextColor(appColor(R.color.button_text));
         return b;
     }
     private ImageButton imageButton(int icon, int description) { ImageButton b = new ImageButton(this); b.setImageResource(icon); b.setScaleType(ImageView.ScaleType.CENTER_INSIDE); b.setImageTintList(android.content.res.ColorStateList.valueOf(appColor(R.color.text_primary))); b.setContentDescription(getString(description)); b.setBackgroundTintList(android.content.res.ColorStateList.valueOf(Color.TRANSPARENT)); b.setPadding(dp(7), dp(7), dp(7), dp(7)); return b; }
-    private void addPlayerButton(LinearLayout row, ImageButton button) { FrameLayout column = new FrameLayout(this); column.addView(button, new FrameLayout.LayoutParams(dp(56), dp(62), Gravity.CENTER)); row.addView(column, new LinearLayout.LayoutParams(0, dp(64), 1)); }
-    private Button compactButton(String value) { Button b = button(value); b.setMinWidth(0); b.setMinimumWidth(0); b.setPadding(dp(12), 0, dp(12), 0); return b; }
+    // The five buttons under the player, whose whole meaning is the shape on them. Their symbols are drawn
+    // as large as the button rather than at the size the drawing file happens to declare. Nothing else is
+    // built this way: the bin on a list row is Android's own, at Android's own size.
+    private ImageButton largeIconButton(int icon, int description) { ImageButton b = imageButton(icon, description); b.setScaleType(ImageView.ScaleType.FIT_CENTER); b.setPadding(dp(8), dp(8), dp(8), dp(8)); return b; }
+    private void addPlayerButton(LinearLayout row, ImageButton button) { FrameLayout column = new FrameLayout(this); column.addView(button, new FrameLayout.LayoutParams(dp(70), dp(76), Gravity.CENTER)); row.addView(column, new LinearLayout.LayoutParams(0, dp(80), 1)); }
+    private Button compactButton(String value) { Button b = button(value); b.setTextSize(uiSize(17)); b.setMinWidth(0); b.setMinimumWidth(0); b.setPadding(dp(12), 0, dp(12), 0); return b; }
     // The platform draws a slider as a hairline. At the sizes this app uses everywhere else it looks like a
     // scratch on the screen rather than a control, and for someone who makes out shapes but not detail it is
     // the hardest thing here to see. This is the same slider, thick enough to find with a finger and no
@@ -290,16 +307,19 @@ public class MainActivity extends Activity implements ReaderService.Listener {
     // The two halves are coloured apart on purpose. Filled in the colour of the app, empty in a grey that
     // belongs to its theme: white on light grey looked like one bar and gave away nothing about how far it
     // had been dragged, which is the one thing a slider exists to say.
-    private void thicken(SeekBar bar) {
+    private void thicken(SeekBar bar) { thicken(bar, 5); }
+    private void thicken(SeekBar bar, int thickness) {
         int track = appColor(R.color.slider_track), filled = appColor(R.color.slider_fill);
+        int radius = Math.max(1, thickness / 2);
         android.graphics.drawable.GradientDrawable behind = new android.graphics.drawable.GradientDrawable();
-        behind.setColor(track); behind.setCornerRadius(dp(3)); behind.setSize(-1, dp(5));
+        behind.setColor(track); behind.setCornerRadius(dp(radius)); behind.setSize(-1, dp(thickness));
         android.graphics.drawable.GradientDrawable ahead = new android.graphics.drawable.GradientDrawable();
-        ahead.setColor(filled); ahead.setCornerRadius(dp(3)); ahead.setSize(-1, dp(5));
+        ahead.setColor(filled); ahead.setCornerRadius(dp(radius)); ahead.setSize(-1, dp(thickness));
         android.graphics.drawable.Drawable[] layers = {
             behind, new android.graphics.drawable.ClipDrawable(ahead, Gravity.START, android.graphics.drawable.ClipDrawable.HORIZONTAL)};
         android.graphics.drawable.LayerDrawable stack = new android.graphics.drawable.LayerDrawable(layers);
         stack.setId(0, android.R.id.background); stack.setId(1, android.R.id.progress);
+        for (int layer = 0; layer < layers.length; layer++) { stack.setLayerHeight(layer, dp(thickness)); stack.setLayerGravity(layer, Gravity.CENTER_VERTICAL); }
         bar.setProgressDrawable(stack);
         bar.setThumbTintList(android.content.res.ColorStateList.valueOf(filled));
         bar.setSplitTrack(false);
@@ -309,6 +329,29 @@ public class MainActivity extends Activity implements ReaderService.Listener {
         return 0;
     }
     private int dp(int value) { return (int)(value * getResources().getDisplayMetrics().density + .5f); }
+    // Where Android has a measure of its own for something, it is asked for rather than written down here.
+    // What it gives back happens to match what this app already used, but the number belongs to the phone: a
+    // device that sizes its lists, its menus or its dialogs differently now sizes these the same way, and so
+    // does a future version of Android. The fallbacks are the platform's own defaults, for the case where an
+    // attribute is missing from a theme.
+    private int systemDimension(int attribute, int fallbackDp) {
+        android.util.TypedValue value = new android.util.TypedValue();
+        if (getTheme().resolveAttribute(attribute, value, true) && value.type == android.util.TypedValue.TYPE_DIMENSION)
+            return android.util.TypedValue.complexToDimensionPixelSize(value.data, getResources().getDisplayMetrics());
+        return dp(fallbackDp);
+    }
+    private float systemTextSize(int attribute, float fallbackSp) {
+        android.util.TypedValue value = new android.util.TypedValue();
+        if (!getTheme().resolveAttribute(attribute, value, true) || value.resourceId == 0) return fallbackSp;
+        android.content.res.TypedArray style = getTheme().obtainStyledAttributes(value.resourceId, new int[]{android.R.attr.textSize});
+        int pixels = style.getDimensionPixelSize(0, 0); style.recycle();
+        return pixels <= 0 ? fallbackSp : pixels / getResources().getDisplayMetrics().scaledDensity;
+    }
+    private int listRowHeight() { return systemDimension(android.R.attr.listPreferredItemHeight, 64); }
+    private int listRowSidePadding() { return systemDimension(android.R.attr.listPreferredItemPaddingLeft, 16); }
+    private int dialogPadding() { return systemDimension(android.R.attr.dialogPreferredPadding, 24); }
+    private int menuRowHeight() { return systemDimension(android.R.attr.listPreferredItemHeightSmall, 48); }
+    private float labelTextSize() { return systemTextSize(android.R.attr.textAppearanceMedium, 18f); }
     private float uiSize(float base) { return base * getSettings().getInt("interface_scale", 100) / 100f; }
     private int appColor(int resource) { String theme = getSettings().getString("theme", "system"); if ("dark".equals(theme)) { if (resource == R.color.text_secondary) return Color.rgb(208,208,208); if (resource == R.color.highlight) return Color.rgb(255,213,79); if (resource == R.color.button_bg) return Color.rgb(18,90,173); if (resource == R.color.button_text) return Color.WHITE; if (resource == R.color.slider_track) return Color.rgb(60,60,60); if (resource == R.color.slider_fill) return Color.rgb(66,165,245); return resource == R.color.text_primary || resource == R.color.accent ? Color.WHITE : Color.BLACK; } if ("light".equals(theme)) { if (resource == R.color.text_secondary) return Color.rgb(51,51,51); if (resource == R.color.highlight) return Color.rgb(255,213,79); if (resource == R.color.button_bg) return Color.rgb(13,71,161); if (resource == R.color.button_text) return Color.WHITE; if (resource == R.color.slider_track) return Color.rgb(201,201,201); if (resource == R.color.slider_fill) return Color.rgb(13,71,161); return resource == R.color.text_primary || resource == R.color.accent ? Color.BLACK : Color.WHITE; } return getColor(resource); }
     private android.content.SharedPreferences getSettings() { return getSharedPreferences("reader_settings", MODE_PRIVATE); }
@@ -590,7 +633,11 @@ public class MainActivity extends Activity implements ReaderService.Listener {
         status.setText(getString(R.string.sentence_count, index + 1, count));
         int percent = count <= 1 ? 0 : Math.round(index * 100f / (count - 1));
         updatingBookProgress = true; bookProgress.setProgress(percent); updatingBookProgress = false; updateBookProgressDescription(percent);
-        body.post(() -> { android.text.Layout l = body.getLayout(); if (l != null) scroll.smoothScrollTo(0, Math.max(0, l.getLineTop(l.getLineForOffset(r.start)) - dp(80))); });
+        body.post(() -> {
+            android.text.Layout l = body.getLayout(); if (l == null) return;
+            int line = Math.max(0, l.getLineForOffset(r.start) - LINES_ABOVE_SENTENCE);
+            scroll.smoothScrollTo(0, Math.max(0, body.getPaddingTop() + l.getLineTop(line)));
+        });
     }
     // Kept awake only while the reading is actually running and the reader itself is on the screen, and only
     // if the reader asked for it. The power button still turns the screen off, so a book listened to in a
@@ -713,8 +760,8 @@ public class MainActivity extends Activity implements ReaderService.Listener {
 
     private void showGoToSentenceDialog() {
         if (reader == null || reader.getCount() == 0) return; pausePlaybackOutsideReader(); final boolean[] applied = {false}; EditText input = new EditText(this); input.setInputType(android.text.InputType.TYPE_CLASS_NUMBER); input.setTextSize(uiSize(20)); input.setHint("1-" + reader.getCount()); input.setContentDescription(getString(R.string.sentence_number)); input.setPadding(dp(24), dp(12), dp(24), dp(12));
-        LinearLayout content = new LinearLayout(this); content.setOrientation(LinearLayout.VERTICAL); content.setPadding(dp(24), dp(12), dp(24), 0);
-        TextView heading = label(getString(R.string.go_to_sentence), 23, true); if (Build.VERSION.SDK_INT >= 28) heading.setAccessibilityHeading(true); content.addView(heading); content.addView(input, new LinearLayout.LayoutParams(-1, -2));
+        LinearLayout content = new LinearLayout(this); content.setOrientation(LinearLayout.VERTICAL); content.setPadding(dialogPadding(), dp(16), dialogPadding(), dp(16));
+        TextView heading = label(getString(R.string.go_to_sentence), 24, true); if (Build.VERSION.SDK_INT >= 28) heading.setAccessibilityHeading(true); content.addView(heading); content.addView(input, new LinearLayout.LayoutParams(-1, -2));
         AlertDialog dialog = new AlertDialog.Builder(this).setView(content).setNegativeButton(R.string.cancel, null).setPositiveButton(R.string.apply, (d, w) -> {
             try { int number = Integer.parseInt(input.getText().toString()); if (number < 1 || number > reader.getCount()) { toast(getString(R.string.invalid_sentence, reader.getCount())); return; } applied[0] = true; reader.seekTo(number - 1); pausedAutomaticallyOutsideReader = false; scheduleAutomaticPlayback(); }
             catch (NumberFormatException e) { toast(getString(R.string.invalid_sentence, reader.getCount())); }
@@ -751,7 +798,7 @@ public class MainActivity extends Activity implements ReaderService.Listener {
         LinearLayout box = listPage();
         Button add = button(getString(R.string.add_bookmark));
         add.setOnClickListener(v -> { addBookmark(); showBookmarks(); });
-        box.addView(add, new LinearLayout.LayoutParams(-1, dp(58)));
+        box.addView(add, new LinearLayout.LayoutParams(-1, dp(56)));
         JSONArray marks = bookmarks();
         if (marks.length() == 0) {
             TextView empty = emptyNotice(getString(R.string.no_bookmarks));
@@ -762,8 +809,8 @@ public class MainActivity extends Activity implements ReaderService.Listener {
         for (int i = 0; i < marks.length(); i++) {
             JSONObject mark = marks.optJSONObject(i); if (mark == null) continue;
             int sentence = mark.optInt("sentence"); String name = mark.optString("text");
-            LinearLayout row = new LinearLayout(this); row.setGravity(Gravity.CENTER_VERTICAL); row.setPadding(0, dp(6), 0, dp(6));
-            Button open = listRowButton(name, 18);
+            LinearLayout row = new LinearLayout(this); row.setGravity(Gravity.CENTER_VERTICAL); row.setPadding(0, dp(16), 0, 0);
+            Button open = listRowButton(name, labelTextSize());
             open.setOnClickListener(v -> jumpFromList(sentence));
             ImageButton remove = imageButton(android.R.drawable.ic_menu_delete, R.string.delete); remove.setContentDescription(getString(R.string.remove_bookmark, name));
             final int position = entries.size();
@@ -784,8 +831,8 @@ public class MainActivity extends Activity implements ReaderService.Listener {
         final boolean[] applied = {false};
         EditText input = new EditText(this); input.setTextSize(uiSize(20)); input.setHint(getString(R.string.search_phrase)); input.setContentDescription(getString(R.string.search_phrase)); input.setPadding(dp(24), dp(12), dp(24), dp(12));
         input.setText(lastSearch); input.setSelectAllOnFocus(true);
-        LinearLayout content = new LinearLayout(this); content.setOrientation(LinearLayout.VERTICAL); content.setPadding(dp(24), dp(12), dp(24), dp(12));
-        TextView heading = label(getString(R.string.search), 23, true); if (Build.VERSION.SDK_INT >= 28) heading.setAccessibilityHeading(true);
+        LinearLayout content = new LinearLayout(this); content.setOrientation(LinearLayout.VERTICAL); content.setPadding(dialogPadding(), dp(16), dialogPadding(), dp(16));
+        TextView heading = label(getString(R.string.search), 24, true); if (Build.VERSION.SDK_INT >= 28) heading.setAccessibilityHeading(true);
         content.addView(heading); content.addView(input, new LinearLayout.LayoutParams(-1, -2));
         // The dialog stays open on a hit and the book itself starts reading from the sentence found, in its
         // own voice - exactly as if the reading had been started from that place. What is heard is then the
@@ -797,7 +844,7 @@ public class MainActivity extends Activity implements ReaderService.Listener {
         // in the order previous, next, close always stand the same way and are read in that order. What the
         // screen reader says is what is written on them, so nobody is told a different thing than the person
         // sitting next to them sees.
-        LinearLayout buttons = new LinearLayout(this); buttons.setPadding(0, dp(14), 0, 0); buttons.setGravity(Gravity.CENTER);
+        LinearLayout buttons = new LinearLayout(this); buttons.setPadding(0, dp(16), 0, 0); buttons.setGravity(Gravity.CENTER);
         Button previousMatch = searchButton(R.string.previous_result);
         Button nextMatch = searchButton(R.string.next_result);
         Button closeSearch = searchButton(R.string.close);
@@ -818,7 +865,7 @@ public class MainActivity extends Activity implements ReaderService.Listener {
         focusHeading(heading);
     }
     private Button searchButton(int caption) {
-        Button b = compactButton(getString(caption)); b.setTextSize(uiSize(17));
+        Button b = compactButton(getString(caption));
         b.setPadding(dp(6), dp(10), dp(6), dp(10)); b.setMinimumHeight(dp(56));
         return b;
     }
@@ -847,8 +894,8 @@ public class MainActivity extends Activity implements ReaderService.Listener {
         input.setPadding(dp(24), dp(12), dp(24), dp(12));
         String pasted = ArticleReader.firstUrl(clipboardText());
         if (!pasted.isEmpty()) { input.setText(pasted); input.setSelectAllOnFocus(true); }
-        LinearLayout content = new LinearLayout(this); content.setOrientation(LinearLayout.VERTICAL); content.setPadding(dp(24), dp(12), dp(24), dp(12));
-        TextView heading = label(getString(R.string.open_url), 23, true); if (Build.VERSION.SDK_INT >= 28) heading.setAccessibilityHeading(true);
+        LinearLayout content = new LinearLayout(this); content.setOrientation(LinearLayout.VERTICAL); content.setPadding(dialogPadding(), dp(16), dialogPadding(), dp(16));
+        TextView heading = label(getString(R.string.open_url), 24, true); if (Build.VERSION.SDK_INT >= 28) heading.setAccessibilityHeading(true);
         content.addView(heading); content.addView(input, new LinearLayout.LayoutParams(-1, -2));
         final boolean[] opened = {false};
         AlertDialog dialog = new AlertDialog.Builder(this).setView(content)
@@ -902,7 +949,7 @@ public class MainActivity extends Activity implements ReaderService.Listener {
     }
     private void showCredits() {
         LinearLayout box = listPage();
-        TextView text = label(getString(R.string.credits_text), 18, false);
+        TextView text = label(getString(R.string.credits_text), labelTextSize(), false);
         text.setPadding(dp(8), dp(12), dp(8), dp(12)); text.setLineSpacing(0, 1.25f);
         box.addView(text);
         showListPage(R.string.credits, box);
@@ -981,7 +1028,7 @@ public class MainActivity extends Activity implements ReaderService.Listener {
     // grey slab behind its text - only the standard touch highlight, which appears while the finger is down
     // and leaves nothing behind it. It stays a button underneath, so a screen reader still announces it as
     // something that can be opened.
-    private Button listRowButton(String name, int textSize) {
+    private Button listRowButton(String name, float textSize) {
         Button row = compactButton(name); row.setGravity(Gravity.START | Gravity.CENTER_VERTICAL); row.setTextSize(uiSize(textSize)); row.setContentDescription(name);
         // The lettering has to come back to the colour of the page. A button hands out the colour that
         // belongs on top of a filled button, and the fill is taken away on the next line - which left white
@@ -991,11 +1038,16 @@ public class MainActivity extends Activity implements ReaderService.Listener {
         android.util.TypedValue highlight = new android.util.TypedValue(); getTheme().resolveAttribute(android.R.attr.selectableItemBackground, highlight, true);
         row.setBackgroundResource(highlight.resourceId);
         // After the background, because a new one brings its own padding along and would undo this.
-        row.setPadding(dp(16), dp(14), dp(16), dp(14)); row.setMinimumHeight(dp(64));
+        row.setPadding(listRowSidePadding(), dp(14), listRowSidePadding(), dp(14)); row.setMinimumHeight(listRowHeight());
+        return row;
+    }
+    private Button menuRowButton(String name) {
+        Button row = listRowButton(name, labelTextSize());
+        row.setMinimumHeight(menuRowHeight()); row.setPadding(listRowSidePadding(), dp(8), listRowSidePadding(), dp(8));
         return row;
     }
     private LinearLayout listPage() { LinearLayout box = new LinearLayout(this); box.setOrientation(LinearLayout.VERTICAL); box.setPadding(dp(4), 0, dp(4), 0); return box; }
-    private TextView emptyNotice(String message) { TextView empty = label(message, 19, false); empty.setPadding(0, dp(24), 0, dp(24)); return empty; }
+    private TextView emptyNotice(String message) { TextView empty = label(message, 20, false); empty.setPadding(0, dp(24), 0, dp(24)); return empty; }
     private void showListPage(int headingResource, LinearLayout box) { showSettingsPage(headingResource, box, null, null, null); }
 
     private JSONArray bookmarks() {
@@ -1035,26 +1087,26 @@ public class MainActivity extends Activity implements ReaderService.Listener {
     private void showSettings() {
         android.content.SharedPreferences p = getSettings();
         pausePlaybackOutsideReader(); sliderValues.clear();
-        LinearLayout box = new LinearLayout(this); box.setOrientation(LinearLayout.VERTICAL); box.setPadding(dp(20), 0, dp(20), 0);
-        TextView languageLabel = label(getString(R.string.language), 18, true); languageLabel.setPadding(0, dp(12), 0, 0); box.addView(languageLabel);
+        LinearLayout box = new LinearLayout(this); box.setOrientation(LinearLayout.VERTICAL); box.setPadding(dp(16), 0, dp(16), 0);
+        TextView languageLabel = label(getString(R.string.language), labelTextSize(), true); languageLabel.setPadding(0, dp(16), 0, 0); box.addView(languageLabel);
         AccessibleSpinner languageSpinner = new AccessibleSpinner(this); String[] languageValues = {"system", "en", "bg"}; String[] languageLabels = {getString(R.string.language_system), getString(R.string.language_english), getString(R.string.language_bulgarian)}; languageSpinner.setAdapter(themedSpinnerAdapter(languageLabels)); int languagePosition = Arrays.asList(languageValues).indexOf(p.getString("language", "system")); languageSpinner.setSelection(Math.max(0, languagePosition), false); box.addView(languageSpinner); configureSpinnerAccessibility(languageSpinner, languageLabels);
-        TextView themeLabel = label(getString(R.string.theme), 18, true); themeLabel.setPadding(0, dp(12), 0, 0); box.addView(themeLabel);
+        TextView themeLabel = label(getString(R.string.theme), labelTextSize(), true); themeLabel.setPadding(0, dp(16), 0, 0); box.addView(themeLabel);
         AccessibleSpinner themeSpinner = new AccessibleSpinner(this); String[] themeValues = {"system", "light", "dark"}; String[] themeLabels = {getString(R.string.theme_system), getString(R.string.theme_light), getString(R.string.theme_dark)}; themeSpinner.setAdapter(themedSpinnerAdapter(themeLabels)); int themePosition = Arrays.asList(themeValues).indexOf(p.getString("theme", "system")); themeSpinner.setSelection(Math.max(0, themePosition), false); box.addView(themeSpinner); configureSpinnerAccessibility(themeSpinner, themeLabels);
-        TextView interfaceValueLabel = addSliderHeader(box, R.string.interface_font_size, 18, dp(12)); SeekBar interfaceFont = new SeekBar(this); thicken(interfaceFont); interfaceFont.setMax(20); int originalInterfaceScale = p.getInt("interface_scale", 100); interfaceFont.setProgress(Math.max(0, Math.min(20, (originalInterfaceScale - 50) / 5))); sliderValues.put(interfaceFont, interfaceValueLabel); updateSliderPercentValue(interfaceFont); box.addView(interfaceFont);
+        TextView interfaceValueLabel = addSliderHeader(box, R.string.interface_font_size, labelTextSize(), dp(16)); SeekBar interfaceFont = new SeekBar(this); thicken(interfaceFont); interfaceFont.setMax(20); int originalInterfaceScale = p.getInt("interface_scale", 100); interfaceFont.setProgress(Math.max(0, Math.min(20, (originalInterfaceScale - 50) / 5))); sliderValues.put(interfaceFont, interfaceValueLabel); updateSliderPercentValue(interfaceFont); box.addView(interfaceFont);
         SeekBar font = seek(box, R.string.document_font_size, 14, 32, p.getInt("font_size", 23));
         SeekBar fastSeekInterval = millisecondSeek(box, R.string.fast_seek_interval, FAST_SEEK_MIN_MS, FAST_SEEK_MAX_MS, 50, fastSeekInterval(p));
-        CheckBox seekVibration = new CheckBox(this); seekVibration.setText(R.string.seek_vibration); seekVibration.setTextSize(uiSize(18)); seekVibration.setChecked(p.getBoolean("seek_vibration", true)); seekVibration.setPadding(0, dp(6), 0, dp(10)); box.addView(seekVibration, new LinearLayout.LayoutParams(-1, -2));
-        CheckBox pauseForSettings = new CheckBox(this); pauseForSettings.setText(R.string.pause_for_settings); pauseForSettings.setTextSize(uiSize(18)); pauseForSettings.setChecked(p.getBoolean("pause_for_settings", true)); pauseForSettings.setPadding(0, dp(10), 0, dp(6)); box.addView(pauseForSettings, new LinearLayout.LayoutParams(-1, -2));
-        CheckBox preventDeviceAutoplay = new CheckBox(this); preventDeviceAutoplay.setText(R.string.prevent_device_autoplay); preventDeviceAutoplay.setTextSize(uiSize(18)); preventDeviceAutoplay.setChecked(p.getBoolean("prevent_device_autoplay", true)); preventDeviceAutoplay.setPadding(0, dp(6), 0, dp(10)); box.addView(preventDeviceAutoplay, new LinearLayout.LayoutParams(-1, -2));
-        TextView keepScreenLabel = label(getString(R.string.keep_screen_on), 18, true); keepScreenLabel.setPadding(0, dp(12), 0, 0); box.addView(keepScreenLabel);
+        CheckBox seekVibration = new CheckBox(this); seekVibration.setText(R.string.seek_vibration); seekVibration.setTextSize(uiSize(labelTextSize())); seekVibration.setChecked(p.getBoolean("seek_vibration", true)); seekVibration.setPadding(0, dp(8), 0, 0); box.addView(seekVibration, new LinearLayout.LayoutParams(-1, -2));
+        CheckBox pauseForSettings = new CheckBox(this); pauseForSettings.setText(R.string.pause_for_settings); pauseForSettings.setTextSize(uiSize(labelTextSize())); pauseForSettings.setChecked(p.getBoolean("pause_for_settings", true)); pauseForSettings.setPadding(0, dp(8), 0, 0); box.addView(pauseForSettings, new LinearLayout.LayoutParams(-1, -2));
+        CheckBox preventDeviceAutoplay = new CheckBox(this); preventDeviceAutoplay.setText(R.string.prevent_device_autoplay); preventDeviceAutoplay.setTextSize(uiSize(labelTextSize())); preventDeviceAutoplay.setChecked(p.getBoolean("prevent_device_autoplay", true)); preventDeviceAutoplay.setPadding(0, dp(8), 0, 0); box.addView(preventDeviceAutoplay, new LinearLayout.LayoutParams(-1, -2));
+        TextView keepScreenLabel = label(getString(R.string.keep_screen_on), labelTextSize(), true); keepScreenLabel.setPadding(0, dp(16), 0, 0); box.addView(keepScreenLabel);
         AccessibleSpinner keepScreenSpinner = new AccessibleSpinner(this);
         String[] keepScreenNames = {getString(R.string.keep_screen_off), getString(R.string.documents_section), getString(R.string.pages_section), getString(R.string.keep_screen_both)};
         keepScreenSpinner.setAdapter(themedSpinnerAdapter(keepScreenNames));
         int keepScreenSaved = Math.max(0, Math.min(KEEP_SCREEN_VALUES.length - 1, indexOf(KEEP_SCREEN_VALUES, p.getString("keep_screen", "off"))));
         keepScreenSpinner.setSelection(keepScreenSaved, false); configureSpinnerAccessibility(keepScreenSpinner, keepScreenNames);
         box.addView(keepScreenSpinner);
-        CheckBox webFromStart = new CheckBox(this); webFromStart.setText(R.string.web_from_start); webFromStart.setTextSize(uiSize(18)); webFromStart.setChecked(p.getBoolean("web_from_start", true)); webFromStart.setPadding(0, dp(6), 0, dp(10)); box.addView(webFromStart, new LinearLayout.LayoutParams(-1, -2));
-        CheckBox closeOnBack = new CheckBox(this); closeOnBack.setText(R.string.close_on_back); closeOnBack.setTextSize(uiSize(18)); closeOnBack.setChecked(p.getBoolean("close_on_back", false)); closeOnBack.setPadding(0, dp(6), 0, dp(10)); box.addView(closeOnBack, new LinearLayout.LayoutParams(-1, -2));
+        CheckBox webFromStart = new CheckBox(this); webFromStart.setText(R.string.web_from_start); webFromStart.setTextSize(uiSize(labelTextSize())); webFromStart.setChecked(p.getBoolean("web_from_start", true)); webFromStart.setPadding(0, dp(8), 0, 0); box.addView(webFromStart, new LinearLayout.LayoutParams(-1, -2));
+        CheckBox closeOnBack = new CheckBox(this); closeOnBack.setText(R.string.close_on_back); closeOnBack.setTextSize(uiSize(labelTextSize())); closeOnBack.setChecked(p.getBoolean("close_on_back", false)); closeOnBack.setPadding(0, dp(8), 0, 0); box.addView(closeOnBack, new LinearLayout.LayoutParams(-1, -2));
         final int[] previewScale = {originalInterfaceScale}; final boolean[] keepPreview = {false};
         interfaceFont.setOnSeekBarChangeListener(new SeekBar.OnSeekBarChangeListener() {
             public void onStartTrackingTouch(SeekBar seekBar) {} public void onStopTrackingTouch(SeekBar seekBar) {}
@@ -1073,12 +1125,12 @@ public class MainActivity extends Activity implements ReaderService.Listener {
     // "selected" for it on its own, which is why the state is carried by setSelected and not by a tick drawn
     // into the caption.
     private LinearLayout tabRow(int[] captions, int active, java.util.function.IntConsumer onPick) {
-        LinearLayout row = new LinearLayout(this); row.setPadding(dp(4), dp(2), dp(4), dp(6));
+        LinearLayout row = new LinearLayout(this); row.setPadding(dp(4), dp(16), dp(4), 0);
         pickedTab = null;
         for (int i = 0; i < captions.length; i++) {
             final int index = i;
             Button tab = compactButton(getString(captions[i]));
-            tab.setTextSize(uiSize(18)); tab.setPadding(dp(8), dp(10), dp(8), dp(10)); tab.setMinimumHeight(dp(52));
+            tab.setTextSize(uiSize(labelTextSize())); tab.setPadding(dp(8), dp(10), dp(8), dp(10)); tab.setMinimumHeight(dp(56));
             boolean open = i == active;
             tab.setSelected(open);
             tab.setTypeface(tab.getTypeface(), open ? android.graphics.Typeface.BOLD : android.graphics.Typeface.NORMAL);
@@ -1099,12 +1151,12 @@ public class MainActivity extends Activity implements ReaderService.Listener {
         if (reader == null) return; android.content.SharedPreferences p = getSettings(); pausePlaybackOutsideReader(); sliderValues.clear();
         final String[] kept = pendingVoice.get(profile);
         ArrayList<ReaderService.EngineOption> engines = new ArrayList<>(); engines.add(new ReaderService.EngineOption("", getString(R.string.default_voice))); engines.addAll(reader.getEngineOptions());
-        LinearLayout box = new LinearLayout(this); box.setOrientation(LinearLayout.VERTICAL); box.setPadding(dp(20), 0, dp(20), 0);
-        TextView engineLabel = label(getString(R.string.speech_engine), 18, true); engineLabel.setPadding(0, dp(12), 0, 0); box.addView(engineLabel);
+        LinearLayout box = new LinearLayout(this); box.setOrientation(LinearLayout.VERTICAL); box.setPadding(dp(16), 0, dp(16), 0);
+        TextView engineLabel = label(getString(R.string.speech_engine), labelTextSize(), true); engineLabel.setPadding(0, dp(16), 0, 0); box.addView(engineLabel);
         String[] engineLabels = new String[engines.size()]; for (int i = 0; i < engines.size(); i++) engineLabels[i] = engines.get(i).label; AccessibleSpinner engineSpinner = new AccessibleSpinner(this); engineSpinner.setAdapter(themedSpinnerAdapter(engineLabels)); String savedEngine = kept != null ? kept[0] : p.getString(profile + "engine", ""); int selectedEngine = 0; for (int i = 1; i < engines.size(); i++) if (engines.get(i).name.equals(savedEngine)) { selectedEngine = i; break; } engineSpinner.setSelection(selectedEngine, false); box.addView(engineSpinner);
-        TextView languageLabel = label(getString(R.string.language), 18, true); languageLabel.setPadding(0, dp(12), 0, 0); languageLabel.setVisibility(View.GONE); box.addView(languageLabel);
+        TextView languageLabel = label(getString(R.string.language), labelTextSize(), true); languageLabel.setPadding(0, dp(16), 0, 0); languageLabel.setVisibility(View.GONE); box.addView(languageLabel);
         AccessibleSpinner languageSpinner = new AccessibleSpinner(this); languageSpinner.setVisibility(View.GONE); box.addView(languageSpinner); ArrayList<LanguageOption> voiceLanguages = new ArrayList<>();
-        TextView voiceLabel = label(getString(R.string.voice), 18, true); voiceLabel.setPadding(0, dp(12), 0, 0); voiceLabel.setVisibility(View.GONE); box.addView(voiceLabel);
+        TextView voiceLabel = label(getString(R.string.voice), labelTextSize(), true); voiceLabel.setPadding(0, dp(16), 0, 0); voiceLabel.setVisibility(View.GONE); box.addView(voiceLabel);
         AccessibleSpinner voiceSpinner = new AccessibleSpinner(this); voiceSpinner.setVisibility(View.GONE); box.addView(voiceSpinner);
         previewButton = button(getString(R.string.preview_voice)); previewButton.setVisibility(View.INVISIBLE); previewSpeaking = false;
         VoiceSelection voiceSelection = new VoiceSelection();
@@ -1189,14 +1241,14 @@ public class MainActivity extends Activity implements ReaderService.Listener {
 
     private void showSleepDialog() {
         if (reader == null) return; pausePlaybackOutsideReader(); android.content.SharedPreferences p = getSettings();
-        LinearLayout box = new LinearLayout(this); box.setOrientation(LinearLayout.VERTICAL); box.setPadding(dp(20), dp(8), dp(20), dp(8)); int[] minutes = {15, 30, 45, 60, 90};
+        LinearLayout box = new LinearLayout(this); box.setOrientation(LinearLayout.VERTICAL); box.setPadding(dp(16), dp(8), dp(16), dp(8)); int[] minutes = {15, 30, 45, 60, 90};
         // A menu and not a set of radio buttons: each row is a thing that happens the moment it is touched,
         // and there is nothing to mark as chosen, because a running timer is shown by its own button under
         // the player. Off is gone from here for the same reason - that button is where a timer is called off.
         LinearLayout choices = new LinearLayout(this); choices.setOrientation(LinearLayout.VERTICAL); int savedChoice = p.getInt("sleep_choice", 0);
-        for (int m : minutes) { Button option = listRowButton(getResources().getQuantityString(R.plurals.minutes, m, m), 18); option.setTag(m); choices.addView(option, new LinearLayout.LayoutParams(-1, -2)); }
-        Button customChoice = listRowButton(getString(R.string.custom_timer), 18); customChoice.setTag(-1); choices.addView(customChoice, new LinearLayout.LayoutParams(-1, -2)); box.addView(choices);
-        LinearLayout customHeader = new LinearLayout(this); customHeader.setGravity(Gravity.CENTER_VERTICAL); TextView customLabel = label(getString(R.string.custom_timer), 18, true); TextView customValue = valueLabel(); customHeader.addView(customLabel, new LinearLayout.LayoutParams(0, -2, 1)); customHeader.addView(customValue, new LinearLayout.LayoutParams(-2, -2)); MinuteSeekBar custom = new MinuteSeekBar(this); thicken(custom); custom.setProgress(Math.max(0, Math.min(89, p.getInt("custom_sleep_minutes", 30) - 1)));
+        for (int m : minutes) { Button option = menuRowButton(getResources().getQuantityString(R.plurals.minutes, m, m)); option.setTag(m); choices.addView(option, new LinearLayout.LayoutParams(-1, -2)); }
+        Button customChoice = menuRowButton(getString(R.string.custom_timer)); customChoice.setTag(-1); choices.addView(customChoice, new LinearLayout.LayoutParams(-1, -2)); box.addView(choices);
+        LinearLayout customHeader = new LinearLayout(this); customHeader.setGravity(Gravity.CENTER_VERTICAL); TextView customLabel = label(getString(R.string.custom_timer), labelTextSize(), true); TextView customValue = valueLabel(); customHeader.addView(customLabel, new LinearLayout.LayoutParams(0, -2, 1)); customHeader.addView(customValue, new LinearLayout.LayoutParams(-2, -2)); MinuteSeekBar custom = new MinuteSeekBar(this); thicken(custom); custom.setProgress(Math.max(0, Math.min(89, p.getInt("custom_sleep_minutes", 30) - 1)));
         SeekBar.OnSeekBarChangeListener customListener = new SeekBar.OnSeekBarChangeListener() { public void onStartTrackingTouch(SeekBar s) {} public void onStopTrackingTouch(SeekBar s) {} public void onProgressChanged(SeekBar s, int progress, boolean fromUser) { int value = progress + 1; String spoken = getResources().getQuantityString(R.plurals.minutes, value, value); customValue.setText(getString(R.string.minutes_short_value, value)); setSliderValueDescription(custom, spoken); } }; custom.setOnSeekBarChangeListener(customListener); customListener.onProgressChanged(custom, custom.getProgress(), false);
         box.addView(customHeader); box.addView(custom, new LinearLayout.LayoutParams(-1, dp(56))); boolean showCustom = savedChoice == -1; customHeader.setVisibility(showCustom ? View.VISIBLE : View.GONE); custom.setVisibility(showCustom ? View.VISIBLE : View.GONE);
         ScrollView timerScroll = new ScrollView(this); timerScroll.addView(box);
@@ -1228,19 +1280,19 @@ public class MainActivity extends Activity implements ReaderService.Listener {
         if (chosen > 0 && !reader.isPlaying()) { pausedAutomaticallyOutsideReader = false; scheduleAutomaticPlayback(); }
     }
     private SeekBar seek(LinearLayout box, int label, int min, int max, int value) {
-        TextView valueLabel = addSliderHeader(box, label, 18, dp(12)); SeekBar s = new SeekBar(this); thicken(s); s.setTag(new SeekRange(min, max)); s.setMax(20); s.setProgress(Math.round((value - min) * 20f / (max - min))); sliderValues.put(s, valueLabel); updateSliderPercentValue(s); s.setOnSeekBarChangeListener(new SeekBar.OnSeekBarChangeListener() { public void onStartTrackingTouch(SeekBar seekBar) {} public void onStopTrackingTouch(SeekBar seekBar) {} public void onProgressChanged(SeekBar seekBar, int progress, boolean fromUser) { updateSliderPercentValue(seekBar); } }); box.addView(s); return s;
+        TextView valueLabel = addSliderHeader(box, label, labelTextSize(), dp(16)); SeekBar s = new SeekBar(this); thicken(s); s.setTag(new SeekRange(min, max)); s.setMax(20); s.setProgress(Math.round((value - min) * 20f / (max - min))); sliderValues.put(s, valueLabel); updateSliderPercentValue(s); s.setOnSeekBarChangeListener(new SeekBar.OnSeekBarChangeListener() { public void onStartTrackingTouch(SeekBar seekBar) {} public void onStopTrackingTouch(SeekBar seekBar) {} public void onProgressChanged(SeekBar seekBar, int progress, boolean fromUser) { updateSliderPercentValue(seekBar); } }); box.addView(s); return s;
     }
     private PercentSeekBar percentSeek(LinearLayout box, int label, int value) {
-        TextView valueLabel = addSliderHeader(box, label, 18, dp(12)); PercentSeekBar seek = new PercentSeekBar(this); thicken(seek); sliderValues.put(seek, valueLabel); seek.setPercent(Math.round(Math.max(0, Math.min(100, value)) / 5f) * 5); updatePercentValue(seek, seek.percent());
+        TextView valueLabel = addSliderHeader(box, label, labelTextSize(), dp(16)); PercentSeekBar seek = new PercentSeekBar(this); thicken(seek); sliderValues.put(seek, valueLabel); seek.setPercent(Math.round(Math.max(0, Math.min(100, value)) / 5f) * 5); updatePercentValue(seek, seek.percent());
         seek.setOnSeekBarChangeListener(new SeekBar.OnSeekBarChangeListener() { public void onStartTrackingTouch(SeekBar s) {} public void onStopTrackingTouch(SeekBar s) {} public void onProgressChanged(SeekBar s, int progress, boolean fromUser) { int percent = seek.percent(); int rounded = Math.max(0, Math.min(100, Math.round(percent / 5f) * 5)); if (rounded != percent) seek.setPercent(rounded); else updatePercentValue(seek, rounded); } });
         box.addView(seek); return seek;
     }
     private void setMillisecondsDescription(SeekBar gap) { updateMillisecondsValue(gap); gap.setOnSeekBarChangeListener(new SeekBar.OnSeekBarChangeListener() { public void onStartTrackingTouch(SeekBar s) {} public void onStopTrackingTouch(SeekBar s) {} public void onProgressChanged(SeekBar s, int progress, boolean fromUser) { updateMillisecondsValue(s); } }); }
     private void setSliderValueDescription(SeekBar seek, String value) { if (Build.VERSION.SDK_INT >= 30) { seek.setContentDescription(null); seek.setStateDescription(value); } else seek.setContentDescription(value); }
     private SeekBar millisecondSeek(LinearLayout box, int value) { return millisecondSeek(box, R.string.sentence_pause, 0, 2000, 100, value); }
-    private SeekBar millisecondSeek(LinearLayout box, int labelResource, int min, int max, int step, int value) { TextView valueLabel = addSliderHeader(box, labelResource, 18, dp(12)); SeekBar seek = new SeekBar(this); thicken(seek); seek.setTag(new SeekRange(min, max)); seek.setMax((max - min) / step); seek.setProgress(Math.max(0, Math.min(seek.getMax(), Math.round((value - min) / (float)step)))); sliderValues.put(seek, valueLabel); box.addView(seek); setMillisecondsDescription(seek); return seek; }
-    private TextView addSliderHeader(LinearLayout box, int labelResource, int textSize, int topPadding) { LinearLayout row = new LinearLayout(this); row.setGravity(Gravity.CENTER_VERTICAL); row.setPadding(0, topPadding, 0, 0); TextView name = label(getString(labelResource), textSize, true); TextView value = valueLabel(); row.addView(name, new LinearLayout.LayoutParams(0, -2, 1)); row.addView(value, new LinearLayout.LayoutParams(-2, -2)); box.addView(row, new LinearLayout.LayoutParams(-1, -2)); return value; }
-    private TextView valueLabel() { TextView value = label("", 18, true); value.setGravity(Gravity.END); value.setFocusable(false); value.setImportantForAccessibility(View.IMPORTANT_FOR_ACCESSIBILITY_NO); return value; }
+    private SeekBar millisecondSeek(LinearLayout box, int labelResource, int min, int max, int step, int value) { TextView valueLabel = addSliderHeader(box, labelResource, labelTextSize(), dp(16)); SeekBar seek = new SeekBar(this); thicken(seek); seek.setTag(new SeekRange(min, max)); seek.setMax((max - min) / step); seek.setProgress(Math.max(0, Math.min(seek.getMax(), Math.round((value - min) / (float)step)))); sliderValues.put(seek, valueLabel); box.addView(seek); setMillisecondsDescription(seek); return seek; }
+    private TextView addSliderHeader(LinearLayout box, int labelResource, float textSize, int topPadding) { LinearLayout row = new LinearLayout(this); row.setGravity(Gravity.CENTER_VERTICAL); row.setPadding(0, topPadding, 0, 0); TextView name = label(getString(labelResource), textSize, true); TextView value = valueLabel(); row.addView(name, new LinearLayout.LayoutParams(0, -2, 1)); row.addView(value, new LinearLayout.LayoutParams(-2, -2)); box.addView(row, new LinearLayout.LayoutParams(-1, -2)); return value; }
+    private TextView valueLabel() { TextView value = label("", labelTextSize(), true); value.setGravity(Gravity.END); value.setFocusable(false); value.setImportantForAccessibility(View.IMPORTANT_FOR_ACCESSIBILITY_NO); return value; }
     private void updatePercentValue(SeekBar seek, int percent) { TextView value = sliderValues.get(seek); if (value != null) value.setText(getString(R.string.percentage_value, percent)); setSliderValueDescription(seek, getString(R.string.percentage_spoken, percent)); }
     private void updateMillisecondsValue(SeekBar seek) { int milliseconds = seekValue(seek); TextView value = sliderValues.get(seek); if (value != null) value.setText(getString(R.string.milliseconds_short_value, milliseconds)); setSliderValueDescription(seek, getString(R.string.milliseconds_value, milliseconds)); }
     private void updateSliderPercentValue(SeekBar seek) { int percent = seek.getMax() == 0 ? 0 : Math.round(seek.getProgress() * 100f / seek.getMax()); updatePercentValue(seek, percent); }
@@ -1297,7 +1349,7 @@ public class MainActivity extends Activity implements ReaderService.Listener {
         focusPickedTab = false;
     }
     private void focusHeading(View heading) { heading.postDelayed(() -> heading.performAccessibilityAction(android.view.accessibility.AccessibilityNodeInfo.ACTION_ACCESSIBILITY_FOCUS, null), 220L); }
-    private ArrayAdapter<String> themedSpinnerAdapter(String[] values) { return new ArrayAdapter<String>(this, android.R.layout.simple_spinner_item, values) { private View style(View view, boolean dropdown) { if (view instanceof TextView) { ((TextView)view).setTextColor(appColor(R.color.text_primary)); ((TextView)view).setTextSize(uiSize(18)); view.setBackgroundColor(appColor(R.color.window_bg)); view.setPadding(dp(12), dp(12), dp(12), dp(12)); view.setImportantForAccessibility(dropdown ? View.IMPORTANT_FOR_ACCESSIBILITY_YES : View.IMPORTANT_FOR_ACCESSIBILITY_NO); view.setAccessibilityDelegate(new View.AccessibilityDelegate() { @Override public void onInitializeAccessibilityNodeInfo(View host, android.view.accessibility.AccessibilityNodeInfo info) { super.onInitializeAccessibilityNodeInfo(host, info); info.setCollectionItemInfo(null); } }); } return view; } @Override public View getView(int position, View convertView, ViewGroup parent) { return style(super.getView(position, convertView, parent), false); } @Override public View getDropDownView(int position, View convertView, ViewGroup parent) { View row = style(super.getDropDownView(position, convertView, parent), true); nudgePopupFocus(row); return row; } }; }
+    private ArrayAdapter<String> themedSpinnerAdapter(String[] values) { return new ArrayAdapter<String>(this, android.R.layout.simple_spinner_item, values) { private View style(View view, boolean dropdown) { if (view instanceof TextView) { ((TextView)view).setTextColor(appColor(R.color.text_primary)); ((TextView)view).setTextSize(uiSize(labelTextSize())); view.setBackgroundColor(appColor(R.color.window_bg)); view.setPadding(dp(12), dp(12), dp(12), dp(12)); view.setImportantForAccessibility(dropdown ? View.IMPORTANT_FOR_ACCESSIBILITY_YES : View.IMPORTANT_FOR_ACCESSIBILITY_NO); view.setAccessibilityDelegate(new View.AccessibilityDelegate() { @Override public void onInitializeAccessibilityNodeInfo(View host, android.view.accessibility.AccessibilityNodeInfo info) { super.onInitializeAccessibilityNodeInfo(host, info); info.setCollectionItemInfo(null); } }); } return view; } @Override public View getView(int position, View convertView, ViewGroup parent) { return style(super.getView(position, convertView, parent), false); } @Override public View getDropDownView(int position, View convertView, ViewGroup parent) { View row = style(super.getDropDownView(position, convertView, parent), true); nudgePopupFocus(row); return row; } }; }
     // The platform's popup is left exactly as it is. This only moves the screen reader onto a row of it when
     // the system has not put it on one itself - which is what happens once the list is long enough to scroll,
     // and is why a long list used to announce itself and then leave the reader to go looking.
@@ -1354,14 +1406,14 @@ public class MainActivity extends Activity implements ReaderService.Listener {
         page.setOnApplyWindowInsetsListener((v, insets) -> { v.setPadding(pad, insets.getSystemWindowInsetTop() + dp(10), pad, insets.getSystemWindowInsetBottom() + dp(16)); return insets; });
         LinearLayout bar = new LinearLayout(this); bar.setGravity(Gravity.CENTER_VERTICAL);
         ImageButton back = imageButton(android.R.drawable.ic_media_previous, R.string.back); back.setOnClickListener(v -> closeRecent()); bar.addView(back, new LinearLayout.LayoutParams(dp(56), dp(56)));
-        TextView heading = label(getString(R.string.recent_books), 25, true); heading.setPadding(dp(8), 0, 0, 0); if (Build.VERSION.SDK_INT >= 28) heading.setAccessibilityHeading(true); bar.addView(heading, new LinearLayout.LayoutParams(0, -2, 1)); page.addView(bar);
+        TextView heading = label(getString(R.string.recent_books), 24, true); heading.setPadding(dp(8), 0, 0, 0); if (Build.VERSION.SDK_INT >= 28) heading.setAccessibilityHeading(true); bar.addView(heading, new LinearLayout.LayoutParams(0, -2, 1)); page.addView(bar);
         page.addView(tabRow(new int[]{R.string.documents_section, R.string.pages_section},
             PAGES_LIST.equals(recentTab) ? 1 : 0,
             index -> { recentTab = index == 1 ? PAGES_LIST : DOCUMENTS_LIST; showRecent(); }),
             new LinearLayout.LayoutParams(-1, -2));
         LinearLayout list = new LinearLayout(this); list.setOrientation(LinearLayout.VERTICAL); ScrollView scrolling = new ScrollView(this); scrolling.addView(list); page.addView(scrolling, new LinearLayout.LayoutParams(-1, 0, 1));
         if (!addRecentSection(list, recentTab, PAGES_LIST.equals(recentTab) ? R.string.remove_page : R.string.remove_book)) {
-            TextView empty = label(getString(R.string.no_recent), 19, false); empty.setPadding(0, dp(24), 0, dp(24)); list.addView(empty);
+            TextView empty = label(getString(R.string.no_recent), 20, false); empty.setPadding(0, dp(24), 0, dp(24)); list.addView(empty);
             // Nothing left where the entry stood, so the reader is put on the line that says so.
             if (pendingListRow >= 0) listFocusTarget = empty;
         }
@@ -1378,8 +1430,8 @@ public class MainActivity extends Activity implements ReaderService.Listener {
         for (int i = 0; i < count; i++) {
             JSONObject item = recent.optJSONObject(i); if (item == null) continue;
             String itemUri = item.optString("uri"), name = item.optString("name");
-            LinearLayout row = new LinearLayout(this); row.setGravity(Gravity.CENTER_VERTICAL); row.setPadding(0, dp(6), 0, dp(6));
-            Button open = listRowButton(name, 19);
+            LinearLayout row = new LinearLayout(this); row.setGravity(Gravity.CENTER_VERTICAL); row.setPadding(0, dp(16), 0, 0);
+            Button open = listRowButton(name, labelTextSize());
             open.setOnClickListener(v -> { if (pages) openRecentPage(itemUri); else openRecent(itemUri); });
             ImageButton remove = imageButton(android.R.drawable.ic_menu_delete, R.string.delete); remove.setContentDescription(getString(removeResource, name));
             final int position = entries.size();
@@ -1424,14 +1476,14 @@ public class MainActivity extends Activity implements ReaderService.Listener {
         LinearLayout page = new LinearLayout(this); page.setOrientation(LinearLayout.VERTICAL); page.setPadding(pad, dp(10), pad, dp(16)); page.setBackgroundColor(appColor(R.color.window_bg));
         page.setOnApplyWindowInsetsListener((v, insets) -> { v.setPadding(pad, insets.getSystemWindowInsetTop() + dp(10), pad, insets.getSystemWindowInsetBottom() + dp(16)); return insets; });
         LinearLayout bar = new LinearLayout(this); bar.setGravity(Gravity.CENTER_VERTICAL); ImageButton back = imageButton(android.R.drawable.ic_media_previous, R.string.back); back.setOnClickListener(v -> closeRecent()); bar.addView(back, new LinearLayout.LayoutParams(dp(56), dp(56)));
-        TextView heading = label(getString(headingResource), 25, true); heading.setPadding(dp(8), 0, 0, 0); if (Build.VERSION.SDK_INT >= 28) heading.setAccessibilityHeading(true); bar.addView(heading, new LinearLayout.LayoutParams(0, -2, 1)); page.addView(bar);
+        TextView heading = label(getString(headingResource), 24, true); heading.setPadding(dp(8), 0, 0, 0); if (Build.VERSION.SDK_INT >= 28) heading.setAccessibilityHeading(true); bar.addView(heading, new LinearLayout.LayoutParams(0, -2, 1)); page.addView(bar);
         // The tabs sit directly under the heading, above everything the page holds, so they are the first
         // thing reached after the title and it is clear that they govern the whole page and not one field.
         if (tabs != null) page.addView(tabs, new LinearLayout.LayoutParams(-1, -2));
         ScrollView scrolling = new ScrollView(this); scrolling.addView(content); page.addView(scrolling, new LinearLayout.LayoutParams(-1, 0, 1));
-        if (bottomExtra != null) page.addView(bottomExtra, new LinearLayout.LayoutParams(-1, dp(58)));
+        if (bottomExtra != null) { LinearLayout.LayoutParams extraRow = new LinearLayout.LayoutParams(-1, dp(56)); extraRow.setMargins(0, dp(16), 0, 0); page.addView(bottomExtra, extraRow); }
         // A page that only lists things has nothing to apply; Back is the only way out of it.
-        if (applyAction != null) { Button apply = button(getString(R.string.apply)); apply.setOnClickListener(v -> applyAction.run()); page.addView(apply, new LinearLayout.LayoutParams(-1, dp(58))); }
+        if (applyAction != null) { Button apply = button(getString(R.string.apply)); apply.setOnClickListener(v -> applyAction.run()); LinearLayout.LayoutParams applyRow = new LinearLayout.LayoutParams(-1, dp(56)); applyRow.setMargins(0, bottomExtra != null ? 0 : dp(16), 0, 0); page.addView(apply, applyRow); }
         appRoot = page; setContentView(page); page.requestApplyInsets(); focusAfterBuild(heading);
     }
     // "Remove the book" is taken at its word: the row goes, and with it everything the app knew about that
