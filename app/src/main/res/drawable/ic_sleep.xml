@@ -1,1 +1,9 @@
-<vector xmlns:android="http://schemas.android.com/apk/res/android" android:width="40dp" android:height="40dp" android:viewportWidth="24" android:viewportHeight="24"><path android:fillColor="@color/text_primary" android:pathData="M9,2a10,10 0,1 0,11.95 13A8,8 0,0 1,9 2zM13,8h6v2h-3l3,4h-6v-2h3z"/></vector>
+<vector xmlns:android="http://schemas.android.com/apk/res/android" android:width="40dp" android:height="40dp" android:viewportWidth="24" android:viewportHeight="24">
+    <!-- The moon is drawn edge to edge of its square, where the other symbols on the player sit well inside
+         theirs. The buttons scale whatever they are given to their own size, so that difference arrived on
+         the screen as one icon plainly larger than its neighbours. The drawing is untouched; it is only held
+         back to the room the rest of them take. -->
+    <group android:pivotX="12" android:pivotY="12" android:scaleX="0.7" android:scaleY="0.7">
+        <path android:fillColor="@color/text_primary" android:pathData="M9,2a10,10 0,1 0,11.95 13A8,8 0,0 1,9 2zM13,8h6v2h-3l3,4h-6v-2h3z"/>
+    </group>
+</vector>
