@@ -23,6 +23,7 @@
 9. The player sits at the bottom of the screen and its symbols are larger. The row under it is there only while the sleep timer button is, so with no timer running the reading has about three more lines; the button fades in and out rather than jumping, and on a phone with animations turned off it simply appears.
 10. Headings, fields and sliders begin on the same line down the page, every button is the same height, and the text runs on one scale of sizes.
 11. The Custom row of the sleep timer shows the minutes chosen at its right-hand end, instead of naming itself a second time above its slider.
+12. The app appears finished. The icon Android shows while an app starts now stays until the book is open and in its place, rather than giving way to a screen that then assembled itself - the name arriving, the buttons moving down, the reading sliding up to where it was left.
 
 ### Fixed
 

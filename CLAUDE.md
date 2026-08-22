@@ -92,6 +92,13 @@ bar on the player than in Options.
 **The reading scrolls in whole lines.** Backing off a fixed number of points left a fraction of a line
 showing along the top edge; `LINES_ABOVE_SENTENCE` counts lines instead.
 
+**Nothing is drawn until the book is in place.** `holdFirstFrame` refuses the first frame, which is what keeps
+Android's starting icon on the screen, and `markReady` lets it through. Ready is the last line of `finishLoad`
+and not the first: called first, it queued the frame ahead of the scroll onto the sentence, and the reading
+was seen sliding up after the icon had gone. The first scroll is a jump rather than a glide, the layout
+transitions are attached only after that frame, and a book that will not open releases the screen anyway
+after `FIRST_FRAME_LIMIT_MS`.
+
 ## Do not resurrect
 
 Features that existed, were built, and were removed after the user tried them. Re-proposing them is a step
