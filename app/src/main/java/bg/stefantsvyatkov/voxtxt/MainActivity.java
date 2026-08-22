@@ -113,6 +113,7 @@ public class MainActivity extends Activity implements ReaderService.Listener {
             box.setCornerRadius(dp(10));
             setBackground(box);
             setPadding(dp(12), dp(12), dp(12), dp(12));
+            setGravity(Gravity.CENTER_VERTICAL | Gravity.START);
         }
         @Override public boolean performClick() { selectionFromPopup = true; spinnerPopupOpening = true; return super.performClick(); }
         boolean consumePopupSelection() { boolean value = selectionFromPopup; selectionFromPopup = false; return value; }
@@ -232,7 +233,8 @@ public class MainActivity extends Activity implements ReaderService.Listener {
         LinearLayout header = new LinearLayout(this); header.setGravity(Gravity.CENTER_VERTICAL);
         Button recent = compactButton("☰ " + getString(R.string.recent)); recent.setOnClickListener(v -> showRecent());
         Button settings = compactButton("⚙  " + getString(R.string.more)); settings.setContentDescription(getString(R.string.more)); settings.setOnClickListener(v -> showMoreMenu());
-        header.addView(recent, new LinearLayout.LayoutParams(0, dp(56), 1)); header.addView(settings, new LinearLayout.LayoutParams(0, dp(56), 1));
+        LinearLayout.LayoutParams menuButton = new LinearLayout.LayoutParams(0, dp(56), 1); menuButton.setMarginStart(dp(4));
+        header.addView(recent, new LinearLayout.LayoutParams(0, dp(56), 1)); header.addView(settings, menuButton);
         root.addView(header);
         LinearLayout sentenceRow = new LinearLayout(this); sentenceRow.setGravity(Gravity.CENTER_VERTICAL);
         status = label(getString(R.string.welcome), labelTextSize(), false); status.setTextColor(appColor(R.color.text_secondary)); status.setPadding(0, dp(7), 0, dp(8)); sentenceRow.addView(status, new LinearLayout.LayoutParams(0, -2, 1));
@@ -1085,6 +1087,21 @@ public class MainActivity extends Activity implements ReaderService.Listener {
         row.setMinimumHeight(menuRowHeight()); row.setPadding(listRowSidePadding(), dp(8), listRowSidePadding(), dp(8));
         return row;
     }
+    // A slider keeps room at both ends for its thumb to stand in without being cut off, and that room is
+    // part of the slider. A heading and a field keep none, so their edges started sixteen points further out
+    // than the bar of a slider and the page read as ragged. Rather than take the room away from the slider -
+    // which would clip the thumb at both ends of its travel - everything else is moved in by the same amount,
+    // and the amount is asked of a slider rather than written down. Margins, so that no control's own inside
+    // is touched.
+    private int sliderInset = -1;
+    private int contentInset() {
+        if (sliderInset < 0) sliderInset = new SeekBar(this).getPaddingLeft();
+        return sliderInset;
+    }
+    private LinearLayout.LayoutParams field(int topMargin) {
+        LinearLayout.LayoutParams params = new LinearLayout.LayoutParams(-1, -2);
+        params.setMargins(contentInset(), topMargin, contentInset(), 0); return params;
+    }
     private LinearLayout.LayoutParams below(int topMargin) {
         LinearLayout.LayoutParams params = new LinearLayout.LayoutParams(-1, -2); params.setMargins(0, topMargin, 0, 0); return params;
     }
@@ -1129,26 +1146,23 @@ public class MainActivity extends Activity implements ReaderService.Listener {
     private void showSettings() {
         android.content.SharedPreferences p = getSettings();
         pausePlaybackOutsideReader(); sliderValues.clear();
-        LinearLayout box = new LinearLayout(this); box.setOrientation(LinearLayout.VERTICAL); box.setPadding(dp(16), 0, dp(16), 0);
-        TextView languageLabel = label(getString(R.string.language), labelTextSize(), true); box.addView(languageLabel, below(dp(16)));
-        AccessibleSpinner languageSpinner = new AccessibleSpinner(this); String[] languageValues = {"system", "en", "bg"}; String[] languageLabels = {getString(R.string.language_system), getString(R.string.language_english), getString(R.string.language_bulgarian)}; languageSpinner.setAdapter(themedSpinnerAdapter(languageLabels)); int languagePosition = Arrays.asList(languageValues).indexOf(p.getString("language", "system")); languageSpinner.setSelection(Math.max(0, languagePosition), false); box.addView(languageSpinner); configureSpinnerAccessibility(languageSpinner, languageLabels);
-        TextView themeLabel = label(getString(R.string.theme), labelTextSize(), true); box.addView(themeLabel, below(dp(16)));
-        AccessibleSpinner themeSpinner = new AccessibleSpinner(this); String[] themeValues = {"system", "light", "dark"}; String[] themeLabels = {getString(R.string.theme_system), getString(R.string.theme_light), getString(R.string.theme_dark)}; themeSpinner.setAdapter(themedSpinnerAdapter(themeLabels)); int themePosition = Arrays.asList(themeValues).indexOf(p.getString("theme", "system")); themeSpinner.setSelection(Math.max(0, themePosition), false); box.addView(themeSpinner); configureSpinnerAccessibility(themeSpinner, themeLabels);
-        TextView interfaceValueLabel = addSliderHeader(box, R.string.interface_font_size, labelTextSize(), dp(16)); SeekBar interfaceFont = new SeekBar(this); thicken(interfaceFont); interfaceFont.setMax(20); int originalInterfaceScale = p.getInt("interface_scale", 100); interfaceFont.setProgress(Math.max(0, Math.min(20, (originalInterfaceScale - 50) / 5))); sliderValues.put(interfaceFont, interfaceValueLabel); updateSliderPercentValue(interfaceFont); box.addView(interfaceFont);
+        LinearLayout box = new LinearLayout(this); box.setOrientation(LinearLayout.VERTICAL);
+        AccessibleSpinner languageSpinner = new AccessibleSpinner(this); labelled(box, R.string.language, languageSpinner); String[] languageValues = {"system", "en", "bg"}; String[] languageLabels = {getString(R.string.language_system), getString(R.string.language_english), getString(R.string.language_bulgarian)}; languageSpinner.setAdapter(themedSpinnerAdapter(languageLabels)); int languagePosition = Arrays.asList(languageValues).indexOf(p.getString("language", "system")); languageSpinner.setSelection(Math.max(0, languagePosition), false); configureSpinnerAccessibility(languageSpinner, languageLabels);
+        AccessibleSpinner themeSpinner = new AccessibleSpinner(this); labelled(box, R.string.theme, themeSpinner); String[] themeValues = {"system", "light", "dark"}; String[] themeLabels = {getString(R.string.theme_system), getString(R.string.theme_light), getString(R.string.theme_dark)}; themeSpinner.setAdapter(themedSpinnerAdapter(themeLabels)); int themePosition = Arrays.asList(themeValues).indexOf(p.getString("theme", "system")); themeSpinner.setSelection(Math.max(0, themePosition), false); configureSpinnerAccessibility(themeSpinner, themeLabels);
+        SeekBar interfaceFont = new SeekBar(this); thicken(interfaceFont); interfaceFont.setMax(20); int originalInterfaceScale = p.getInt("interface_scale", 100); interfaceFont.setProgress(Math.max(0, Math.min(20, (originalInterfaceScale - 50) / 5)));
+        sliderValues.put(interfaceFont, labelledWithValue(box, R.string.interface_font_size, interfaceFont)); updateSliderPercentValue(interfaceFont);
         SeekBar font = seek(box, R.string.document_font_size, 14, 32, p.getInt("font_size", 23));
         SeekBar fastSeekInterval = millisecondSeek(box, R.string.fast_seek_interval, FAST_SEEK_MIN_MS, FAST_SEEK_MAX_MS, 50, fastSeekInterval(p));
-        CheckBox seekVibration = new CheckBox(this); seekVibration.setText(R.string.seek_vibration); seekVibration.setTextSize(uiSize(labelTextSize())); seekVibration.setChecked(p.getBoolean("seek_vibration", true)); box.addView(seekVibration, below(dp(8)));
-        CheckBox pauseForSettings = new CheckBox(this); pauseForSettings.setText(R.string.pause_for_settings); pauseForSettings.setTextSize(uiSize(labelTextSize())); pauseForSettings.setChecked(p.getBoolean("pause_for_settings", true)); box.addView(pauseForSettings, below(dp(8)));
-        CheckBox preventDeviceAutoplay = new CheckBox(this); preventDeviceAutoplay.setText(R.string.prevent_device_autoplay); preventDeviceAutoplay.setTextSize(uiSize(labelTextSize())); preventDeviceAutoplay.setChecked(p.getBoolean("prevent_device_autoplay", true)); box.addView(preventDeviceAutoplay, below(dp(8)));
-        TextView keepScreenLabel = label(getString(R.string.keep_screen_on), labelTextSize(), true); box.addView(keepScreenLabel, below(dp(16)));
-        AccessibleSpinner keepScreenSpinner = new AccessibleSpinner(this);
+        CheckBox seekVibration = new CheckBox(this); seekVibration.setText(R.string.seek_vibration); seekVibration.setTextSize(uiSize(labelTextSize())); seekVibration.setChecked(p.getBoolean("seek_vibration", true)); box.addView(seekVibration, field(dp(8)));
+        CheckBox pauseForSettings = new CheckBox(this); pauseForSettings.setText(R.string.pause_for_settings); pauseForSettings.setTextSize(uiSize(labelTextSize())); pauseForSettings.setChecked(p.getBoolean("pause_for_settings", true)); box.addView(pauseForSettings, field(dp(8)));
+        CheckBox preventDeviceAutoplay = new CheckBox(this); preventDeviceAutoplay.setText(R.string.prevent_device_autoplay); preventDeviceAutoplay.setTextSize(uiSize(labelTextSize())); preventDeviceAutoplay.setChecked(p.getBoolean("prevent_device_autoplay", true)); box.addView(preventDeviceAutoplay, field(dp(8)));
+        AccessibleSpinner keepScreenSpinner = new AccessibleSpinner(this); labelled(box, R.string.keep_screen_on, keepScreenSpinner);
         String[] keepScreenNames = {getString(R.string.keep_screen_off), getString(R.string.documents_section), getString(R.string.pages_section), getString(R.string.keep_screen_both)};
         keepScreenSpinner.setAdapter(themedSpinnerAdapter(keepScreenNames));
         int keepScreenSaved = Math.max(0, Math.min(KEEP_SCREEN_VALUES.length - 1, indexOf(KEEP_SCREEN_VALUES, p.getString("keep_screen", "off"))));
         keepScreenSpinner.setSelection(keepScreenSaved, false); configureSpinnerAccessibility(keepScreenSpinner, keepScreenNames);
-        box.addView(keepScreenSpinner);
-        CheckBox webFromStart = new CheckBox(this); webFromStart.setText(R.string.web_from_start); webFromStart.setTextSize(uiSize(labelTextSize())); webFromStart.setChecked(p.getBoolean("web_from_start", true)); box.addView(webFromStart, below(dp(8)));
-        CheckBox closeOnBack = new CheckBox(this); closeOnBack.setText(R.string.close_on_back); closeOnBack.setTextSize(uiSize(labelTextSize())); closeOnBack.setChecked(p.getBoolean("close_on_back", false)); box.addView(closeOnBack, below(dp(8)));
+        CheckBox webFromStart = new CheckBox(this); webFromStart.setText(R.string.web_from_start); webFromStart.setTextSize(uiSize(labelTextSize())); webFromStart.setChecked(p.getBoolean("web_from_start", true)); box.addView(webFromStart, field(dp(8)));
+        CheckBox closeOnBack = new CheckBox(this); closeOnBack.setText(R.string.close_on_back); closeOnBack.setTextSize(uiSize(labelTextSize())); closeOnBack.setChecked(p.getBoolean("close_on_back", false)); box.addView(closeOnBack, field(dp(8)));
         final int[] previewScale = {originalInterfaceScale}; final boolean[] keepPreview = {false};
         interfaceFont.setOnSeekBarChangeListener(new SeekBar.OnSeekBarChangeListener() {
             public void onStartTrackingTouch(SeekBar seekBar) {} public void onStopTrackingTouch(SeekBar seekBar) {}
@@ -1193,13 +1207,12 @@ public class MainActivity extends Activity implements ReaderService.Listener {
         if (reader == null) return; android.content.SharedPreferences p = getSettings(); pausePlaybackOutsideReader(); sliderValues.clear();
         final String[] kept = pendingVoice.get(profile);
         ArrayList<ReaderService.EngineOption> engines = new ArrayList<>(); engines.add(new ReaderService.EngineOption("", getString(R.string.default_voice))); engines.addAll(reader.getEngineOptions());
-        LinearLayout box = new LinearLayout(this); box.setOrientation(LinearLayout.VERTICAL); box.setPadding(dp(16), 0, dp(16), 0);
-        TextView engineLabel = label(getString(R.string.speech_engine), labelTextSize(), true); box.addView(engineLabel, below(dp(16)));
-        String[] engineLabels = new String[engines.size()]; for (int i = 0; i < engines.size(); i++) engineLabels[i] = engines.get(i).label; AccessibleSpinner engineSpinner = new AccessibleSpinner(this); engineSpinner.setAdapter(themedSpinnerAdapter(engineLabels)); String savedEngine = kept != null ? kept[0] : p.getString(profile + "engine", ""); int selectedEngine = 0; for (int i = 1; i < engines.size(); i++) if (engines.get(i).name.equals(savedEngine)) { selectedEngine = i; break; } engineSpinner.setSelection(selectedEngine, false); box.addView(engineSpinner);
-        TextView languageLabel = label(getString(R.string.language), labelTextSize(), true); languageLabel.setVisibility(View.GONE); box.addView(languageLabel, below(dp(16)));
-        AccessibleSpinner languageSpinner = new AccessibleSpinner(this); languageSpinner.setVisibility(View.GONE); box.addView(languageSpinner); ArrayList<LanguageOption> voiceLanguages = new ArrayList<>();
-        TextView voiceLabel = label(getString(R.string.voice), labelTextSize(), true); voiceLabel.setVisibility(View.GONE); box.addView(voiceLabel, below(dp(16)));
-        AccessibleSpinner voiceSpinner = new AccessibleSpinner(this); voiceSpinner.setVisibility(View.GONE); box.addView(voiceSpinner);
+        LinearLayout box = new LinearLayout(this); box.setOrientation(LinearLayout.VERTICAL);
+        String[] engineLabels = new String[engines.size()]; for (int i = 0; i < engines.size(); i++) engineLabels[i] = engines.get(i).label; AccessibleSpinner engineSpinner = new AccessibleSpinner(this); labelled(box, R.string.speech_engine, engineSpinner); engineSpinner.setAdapter(themedSpinnerAdapter(engineLabels)); String savedEngine = kept != null ? kept[0] : p.getString(profile + "engine", ""); int selectedEngine = 0; for (int i = 1; i < engines.size(); i++) if (engines.get(i).name.equals(savedEngine)) { selectedEngine = i; break; } engineSpinner.setSelection(selectedEngine, false);
+        AccessibleSpinner languageSpinner = new AccessibleSpinner(this);
+        TextView languageLabel = labelled(box, R.string.language, languageSpinner); languageLabel.setVisibility(View.GONE); languageSpinner.setVisibility(View.GONE); ArrayList<LanguageOption> voiceLanguages = new ArrayList<>();
+        AccessibleSpinner voiceSpinner = new AccessibleSpinner(this);
+        TextView voiceLabel = labelled(box, R.string.voice, voiceSpinner); voiceLabel.setVisibility(View.GONE); voiceSpinner.setVisibility(View.GONE);
         previewButton = button(getString(R.string.preview_voice)); previewButton.setVisibility(View.INVISIBLE); previewSpeaking = false;
         VoiceSelection voiceSelection = new VoiceSelection();
         configureSpinnerAccessibility(engineSpinner, engineLabels, position -> {
@@ -1283,7 +1296,9 @@ public class MainActivity extends Activity implements ReaderService.Listener {
 
     private void showSleepDialog() {
         if (reader == null) return; pausePlaybackOutsideReader(); android.content.SharedPreferences p = getSettings();
-        LinearLayout box = new LinearLayout(this); box.setOrientation(LinearLayout.VERTICAL); box.setPadding(dp(16), dp(8), dp(16), dp(8)); int[] minutes = {15, 30, 45, 60, 90};
+        LinearLayout box = new LinearLayout(this); box.setOrientation(LinearLayout.VERTICAL);
+        int menuEdge = Math.max(0, dialogPadding() - listRowSidePadding()); box.setPadding(menuEdge, dp(8), menuEdge, dp(8));
+        int[] minutes = {15, 30, 45, 60, 90};
         // A menu and not a set of radio buttons: each row is a thing that happens the moment it is touched,
         // and there is nothing to mark as chosen, because a running timer is shown by its own button under
         // the player. Off is gone from here for the same reason - that button is where a timer is called off.
@@ -1296,7 +1311,9 @@ public class MainActivity extends Activity implements ReaderService.Listener {
         choices.addView(customRow, new LinearLayout.LayoutParams(-1, -2)); box.addView(choices);
         MinuteSeekBar custom = new MinuteSeekBar(this); thicken(custom); custom.setProgress(Math.max(0, Math.min(89, p.getInt("custom_sleep_minutes", 30) - 1)));
         SeekBar.OnSeekBarChangeListener customListener = new SeekBar.OnSeekBarChangeListener() { public void onStartTrackingTouch(SeekBar s) {} public void onStopTrackingTouch(SeekBar s) {} public void onProgressChanged(SeekBar s, int progress, boolean fromUser) { int value = progress + 1; String spoken = getResources().getQuantityString(R.plurals.minutes, value, value); customValue.setText(getString(R.string.minutes_short_value, value)); setSliderValueDescription(custom, spoken); } }; custom.setOnSeekBarChangeListener(customListener); customListener.onProgressChanged(custom, custom.getProgress(), false);
-        box.addView(custom, new LinearLayout.LayoutParams(-1, -2)); boolean showCustom = savedChoice == -1; custom.setVisibility(showCustom ? View.VISIBLE : View.GONE);
+        LinearLayout.LayoutParams customBar = new LinearLayout.LayoutParams(-1, -2);
+        int barEdge = Math.max(0, dialogPadding() - contentInset() - menuEdge); customBar.setMargins(barEdge, 0, barEdge, 0);
+        box.addView(custom, customBar); boolean showCustom = savedChoice == -1; custom.setVisibility(showCustom ? View.VISIBLE : View.GONE);
         ScrollView timerScroll = new ScrollView(this); timerScroll.addView(box);
         final boolean[] applied = {false};
         AlertDialog dialog = new AlertDialog.Builder(this).setTitle(R.string.sleep_timer).setView(timerScroll).setNegativeButton(R.string.close, null).setPositiveButton(R.string.apply, null).create();
@@ -1329,18 +1346,43 @@ public class MainActivity extends Activity implements ReaderService.Listener {
         if (chosen > 0 && !reader.isPlaying()) { pausedAutomaticallyOutsideReader = false; scheduleAutomaticPlayback(); }
     }
     private SeekBar seek(LinearLayout box, int label, int min, int max, int value) {
-        TextView valueLabel = addSliderHeader(box, label, labelTextSize(), dp(16)); SeekBar s = new SeekBar(this); thicken(s); s.setTag(new SeekRange(min, max)); s.setMax(20); s.setProgress(Math.round((value - min) * 20f / (max - min))); sliderValues.put(s, valueLabel); updateSliderPercentValue(s); s.setOnSeekBarChangeListener(new SeekBar.OnSeekBarChangeListener() { public void onStartTrackingTouch(SeekBar seekBar) {} public void onStopTrackingTouch(SeekBar seekBar) {} public void onProgressChanged(SeekBar seekBar, int progress, boolean fromUser) { updateSliderPercentValue(seekBar); } }); box.addView(s); return s;
+        SeekBar s = new SeekBar(this); thicken(s); s.setTag(new SeekRange(min, max)); s.setMax(20); s.setProgress(Math.round((value - min) * 20f / (max - min)));
+        sliderValues.put(s, labelledWithValue(box, label, s)); updateSliderPercentValue(s); s.setOnSeekBarChangeListener(new SeekBar.OnSeekBarChangeListener() { public void onStartTrackingTouch(SeekBar seekBar) {} public void onStopTrackingTouch(SeekBar seekBar) {} public void onProgressChanged(SeekBar seekBar, int progress, boolean fromUser) { updateSliderPercentValue(seekBar); } }); return s;
     }
     private PercentSeekBar percentSeek(LinearLayout box, int label, int value) {
-        TextView valueLabel = addSliderHeader(box, label, labelTextSize(), dp(16)); PercentSeekBar seek = new PercentSeekBar(this); thicken(seek); sliderValues.put(seek, valueLabel); seek.setPercent(Math.round(Math.max(0, Math.min(100, value)) / 5f) * 5); updatePercentValue(seek, seek.percent());
+        PercentSeekBar seek = new PercentSeekBar(this); thicken(seek);
+        sliderValues.put(seek, labelledWithValue(box, label, seek)); seek.setPercent(Math.round(Math.max(0, Math.min(100, value)) / 5f) * 5); updatePercentValue(seek, seek.percent());
         seek.setOnSeekBarChangeListener(new SeekBar.OnSeekBarChangeListener() { public void onStartTrackingTouch(SeekBar s) {} public void onStopTrackingTouch(SeekBar s) {} public void onProgressChanged(SeekBar s, int progress, boolean fromUser) { int percent = seek.percent(); int rounded = Math.max(0, Math.min(100, Math.round(percent / 5f) * 5)); if (rounded != percent) seek.setPercent(rounded); else updatePercentValue(seek, rounded); } });
-        box.addView(seek); return seek;
+        return seek;
     }
     private void setMillisecondsDescription(SeekBar gap) { updateMillisecondsValue(gap); gap.setOnSeekBarChangeListener(new SeekBar.OnSeekBarChangeListener() { public void onStartTrackingTouch(SeekBar s) {} public void onStopTrackingTouch(SeekBar s) {} public void onProgressChanged(SeekBar s, int progress, boolean fromUser) { updateMillisecondsValue(s); } }); }
     private void setSliderValueDescription(SeekBar seek, String value) { if (Build.VERSION.SDK_INT >= 30) { seek.setContentDescription(null); seek.setStateDescription(value); } else seek.setContentDescription(value); }
     private SeekBar millisecondSeek(LinearLayout box, int value) { return millisecondSeek(box, R.string.sentence_pause, 0, 2000, 100, value); }
-    private SeekBar millisecondSeek(LinearLayout box, int labelResource, int min, int max, int step, int value) { TextView valueLabel = addSliderHeader(box, labelResource, labelTextSize(), dp(16)); SeekBar seek = new SeekBar(this); thicken(seek); seek.setTag(new SeekRange(min, max)); seek.setMax((max - min) / step); seek.setProgress(Math.max(0, Math.min(seek.getMax(), Math.round((value - min) / (float)step)))); sliderValues.put(seek, valueLabel); box.addView(seek); setMillisecondsDescription(seek); return seek; }
-    private TextView addSliderHeader(LinearLayout box, int labelResource, float textSize, int topPadding) { LinearLayout row = new LinearLayout(this); row.setGravity(Gravity.CENTER_VERTICAL); TextView name = label(getString(labelResource), textSize, true); TextView value = valueLabel(); row.addView(name, new LinearLayout.LayoutParams(0, -2, 1)); row.addView(value, new LinearLayout.LayoutParams(-2, -2)); box.addView(row, below(topPadding)); return value; }
+    private SeekBar millisecondSeek(LinearLayout box, int labelResource, int min, int max, int step, int value) { SeekBar seek = new SeekBar(this); thicken(seek); seek.setTag(new SeekRange(min, max)); seek.setMax((max - min) / step); seek.setProgress(Math.max(0, Math.min(seek.getMax(), Math.round((value - min) / (float)step)))); sliderValues.put(seek, labelledWithValue(box, labelResource, seek)); setMillisecondsDescription(seek); return seek; }
+    private TextView labelled(LinearLayout box, int captionResource, View control) {
+        TextView name = label(getString(captionResource), labelTextSize(), true);
+        box.addView(name, field(dp(16)));
+        addControl(box, control);
+        return name;
+    }
+    // The same, with the control's own value at the right-hand end of the heading - what a slider needs. The
+    // value is never spoken: the slider announces it itself, and a screen reader saying it twice is worse.
+    private TextView labelledWithValue(LinearLayout box, int captionResource, View control) {
+        LinearLayout row = new LinearLayout(this); row.setGravity(Gravity.CENTER_VERTICAL);
+        TextView name = label(getString(captionResource), labelTextSize(), true), value = valueLabel();
+        row.addView(name, new LinearLayout.LayoutParams(0, -2, 1)); row.addView(value, new LinearLayout.LayoutParams(-2, -2));
+        box.addView(row, field(dp(16)));
+        addControl(box, control);
+        return value;
+    }
+    private void addControl(LinearLayout box, View control) {
+        control.setMinimumHeight(dp(56));
+        box.addView(control, control instanceof SeekBar ? new LinearLayout.LayoutParams(-1, -2) : field(0));
+    }
+    // The one heading not built by labelled(): the player panel is not a page of settings and its bar is
+    // added separately, under a heading with no space above it. It is moved in by the same amount as the
+    // others, so that File progress and its bar begin on the same line as everything else does.
+    private TextView addSliderHeader(LinearLayout box, int labelResource, float textSize, int topPadding) { LinearLayout row = new LinearLayout(this); row.setGravity(Gravity.CENTER_VERTICAL); TextView name = label(getString(labelResource), textSize, true); TextView value = valueLabel(); row.addView(name, new LinearLayout.LayoutParams(0, -2, 1)); row.addView(value, new LinearLayout.LayoutParams(-2, -2)); box.addView(row, field(topPadding)); return value; }
     private TextView valueLabel() { TextView value = label("", labelTextSize(), true); value.setGravity(Gravity.END); value.setFocusable(false); value.setImportantForAccessibility(View.IMPORTANT_FOR_ACCESSIBILITY_NO); return value; }
     private void updatePercentValue(SeekBar seek, int percent) { TextView value = sliderValues.get(seek); if (value != null) value.setText(getString(R.string.percentage_value, percent)); setSliderValueDescription(seek, getString(R.string.percentage_spoken, percent)); }
     private void updateMillisecondsValue(SeekBar seek) { int milliseconds = seekValue(seek); TextView value = sliderValues.get(seek); if (value != null) value.setText(getString(R.string.milliseconds_short_value, milliseconds)); setSliderValueDescription(seek, getString(R.string.milliseconds_value, milliseconds)); }
