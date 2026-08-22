@@ -321,12 +321,16 @@ public class MainActivity extends Activity implements ReaderService.Listener {
         if (transitionsRunning > 0 || scroll == null || body == null) return;
         TextView carrier = title != null && title.getVisibility() == View.VISIBLE ? title : appHeading;
         if (carrier == null) return;
-        int given = Math.max(0, carrier.getPaddingBottom() - dp(8));
-        int lineHeight = body.getLineHeight(), height = scroll.getHeight() + given;
+        if (!(carrier.getLayoutParams() instanceof LinearLayout.LayoutParams)) return;
+        // What is left over is given below the name as a margin and not as padding. As padding it belonged to
+        // the name, so a screen reader drew its outline around an empty row under the words - which is what a
+        // long title made plain. As a margin the distance is the same and the outline holds only the words.
+        LinearLayout.LayoutParams room = (LinearLayout.LayoutParams)carrier.getLayoutParams();
+        int lineHeight = body.getLineHeight(), height = scroll.getHeight() + room.bottomMargin;
         if (lineHeight <= 0 || height <= lineHeight) return;
         int extra = height % lineHeight;
-        if (extra == given) return;
-        carrier.setPadding(0, 0, 0, dp(8) + extra);
+        if (extra == room.bottomMargin) return;
+        room.bottomMargin = extra; carrier.setLayoutParams(room);
     }
     private TextView label(String value, float sp, boolean bold) { TextView v = new TextView(this); v.setText(value); v.setTextSize(uiSize(sp)); v.setTextColor(appColor(R.color.text_primary)); if (bold) v.setTypeface(v.getTypeface(), android.graphics.Typeface.BOLD); return v; }
     // The plain grey the platform gives a button is what made the app look like a form. A blue one reads as
@@ -887,21 +891,17 @@ public class MainActivity extends Activity implements ReaderService.Listener {
         // own voice - exactly as if the reading had been started from that place. What is heard is then the
         // book and not a description of it, and judging whether this is the right place is simply listening.
         //
-        // The three buttons belong to the dialog itself rather than to the standard row underneath it. That
-        // row decides on its own whether the captions fit side by side or have to be stacked, reverses their
-        // order when it stacks them, and resizes the dialog whenever a caption changes. Three equal buttons
-        // in the order previous, next, close always stand the same way and are read in that order. What the
-        // screen reader says is what is written on them, so nobody is told a different thing than the person
-        // sitting next to them sees.
+        // Previous and Next belong to the content: they work on what the dialog is showing and are used over
+        // and over without leaving it. Close is the dialog's own business and stands in the row the dialog
+        // keeps for that, where every other dialog on the phone puts it and where Back leads as well. Three
+        // captions on one line did not fit in Bulgarian and were broken across two.
         LinearLayout buttons = new LinearLayout(this); buttons.setPadding(0, dp(16), 0, 0); buttons.setGravity(Gravity.CENTER);
         Button previousMatch = searchButton(R.string.previous_result);
         Button nextMatch = searchButton(R.string.next_result);
-        Button closeSearch = searchButton(R.string.close);
         buttons.addView(previousMatch, new LinearLayout.LayoutParams(-2, -2, 1));
         buttons.addView(nextMatch, new LinearLayout.LayoutParams(-2, -2, 1));
-        buttons.addView(closeSearch, new LinearLayout.LayoutParams(-2, -2, 1));
         content.addView(buttons, new LinearLayout.LayoutParams(-1, -2));
-        AlertDialog dialog = new AlertDialog.Builder(this).setView(content).create();
+        AlertDialog dialog = new AlertDialog.Builder(this).setView(content).setNegativeButton(R.string.close, null).create();
         dialog.setOnDismissListener(d -> {
             // After a hit the book is already reading; only the flag that would start it a second time is
             // cleared. Without a hit nothing was touched, so the reading goes back to what it was.
@@ -909,18 +909,25 @@ public class MainActivity extends Activity implements ReaderService.Listener {
         });
         previousMatch.setOnClickListener(v -> playMatch(input, applied, -1));
         nextMatch.setOnClickListener(v -> playMatch(input, applied, 1));
-        closeSearch.setOnClickListener(v -> dialog.dismiss());
         dialog.show();
         focusHeading(heading);
     }
+    // The three stand inside the dialog rather than in the row it offers, because that row decides for itself
+    // whether captions fit side by side, reverses their order when it stacks them, and resizes the dialog when
+    // one changes. They are dressed as the dialog's own buttons all the same: flat, in the colour of the theme,
+    // the way Close and Apply are drawn a few lines below them.
     private Button searchButton(int caption) {
-        Button b = compactButton(getString(caption));
-        b.setPadding(dp(6), dp(10), dp(6), dp(10)); b.setMinimumHeight(dp(56));
+        Button b = new Button(this, null, android.R.attr.buttonBarButtonStyle);
+        b.setText(getString(caption)); b.setMinimumHeight(dp(56));
         return b;
     }
     private void playMatch(EditText input, boolean[] applied, int direction) {
         if (reader == null) return;
         lastSearch = input.getText().toString().trim();
+        // Asking for the caret is not enough: it lights the field up for anyone watching and says nothing
+        // to anyone listening. The screen reader has to be moved as well, and then the field announces
+        // itself and what it is for.
+        if (lastSearch.isEmpty()) { input.requestFocus(); focusHeading(input); return; }
         int found = direction > 0 ? reader.findSentence(lastSearch, reader.getCurrent()) : reader.findPreviousSentence(lastSearch, reader.getCurrent());
         if (found < 0) { toast(getString(R.string.not_found)); return; }
         applied[0] = true;

@@ -6,6 +6,10 @@ not say: decisions that look arbitrary from the code, and traps that have alread
 
 The user writes and expects replies in Bulgarian.
 
+**Never write "ѝ" - the i with a grave accent. Write "й" instead.** Neural Speechlab reads it as an
+unknown character, so it reaches him as noise in the middle of a sentence. This holds everywhere: the app's
+Bulgarian strings, the two documents in `docs/`, and anything written to him in Bulgarian.
+
 **He uses Jieshuo, not TalkBack.** TalkBack comes out only for the occasional test, so advice that assumes it,
 or fixes aimed at its particular quirks, are aimed at the wrong reader.
 
