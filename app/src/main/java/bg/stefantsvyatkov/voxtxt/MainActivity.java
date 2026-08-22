@@ -182,10 +182,11 @@ public class MainActivity extends Activity implements ReaderService.Listener {
         bindRequested = bindService(new Intent(this, ReaderService.class), connection, BIND_AUTO_CREATE);
         if (Build.VERSION.SDK_INT >= 33 && checkSelfPermission(Manifest.permission.POST_NOTIFICATIONS) != PackageManager.PERMISSION_GRANTED)
             requestPermissions(new String[]{Manifest.permission.POST_NOTIFICATIONS}, 11);
+        holdFirstFrame();
         if (handleIncoming(getIntent())) return;
         if (restoreLastPage()) return;
         String last = documents().getString("last_uri", "");
-        if (!last.isEmpty()) loadUri(Uri.parse(last), false);
+        if (last.isEmpty()) markReady(); else loadUri(Uri.parse(last), false);
     }
     // A web page shared from a browser, or a text file opened from a file manager. Anything else falls through
     // to the book that was open last.
@@ -290,7 +291,7 @@ public class MainActivity extends Activity implements ReaderService.Listener {
         // The panel takes the height its own rows need instead of a number fixed in advance, so it grows with
         // the timer button and with a larger interface text size rather than cutting either off.
         playerPanel.setLayoutTransition(collapseTransition(true));
-        root.setLayoutTransition(collapseTransition(false));
+        if (readyToShow) root.setLayoutTransition(collapseTransition(false));
         LinearLayout.LayoutParams panelParams = new LinearLayout.LayoutParams(-1, -2); panelParams.setMargins(0, 0, 0, 0); root.addView(playerPanel, panelParams); setContentView(root); setTitle(getString(R.string.app_name)); applyScreenSetting(); updateControls(); if (reader != null) showCurrent(reader.getCurrent(), reader.getCount()); root.requestApplyInsets();
     }
     private android.animation.LayoutTransition collapseTransition(boolean owningTheButton) {
@@ -458,7 +459,7 @@ public class MainActivity extends Activity implements ReaderService.Listener {
                     forgetCachedPage();
                     addRecent(DOCUMENTS_LIST, currentUri, currentName); if (reader == null) pendingText = loaded; else finishLoad(loaded);
                 });
-            } catch (Exception e) { runOnUiThread(() -> { loading = false; status.setText(R.string.open_failed); toast(e.getMessage()); updateControls(); if (resumeAfterFilePickerLoad) { resumeAfterFilePickerLoad = false; scheduleAutomaticPlayback(); } }); }
+            } catch (Exception e) { runOnUiThread(() -> { markReady(); loading = false; status.setText(R.string.open_failed); toast(e.getMessage()); updateControls(); if (resumeAfterFilePickerLoad) { resumeAfterFilePickerLoad = false; scheduleAutomaticPlayback(); } }); }
         });
     }
     private void finishLoad(String loaded) {
@@ -470,6 +471,7 @@ public class MainActivity extends Activity implements ReaderService.Listener {
         int position = fromStart ? 0 : reader.savedPosition(currentUri);
         reader.load(currentUri, currentName, loaded, position, fromWeb);
         if (resumeAfterFilePickerLoad) { resumeAfterFilePickerLoad = false; scheduleAutomaticPlayback(); }
+        markReady();
     }
 
     // Read the web page. The address is fetched as a browser would fetch it and stripped down to the article:
@@ -682,7 +684,8 @@ public class MainActivity extends Activity implements ReaderService.Listener {
         body.post(() -> {
             android.text.Layout l = body.getLayout(); if (l == null) return;
             int line = Math.max(0, l.getLineForOffset(r.start) - LINES_ABOVE_SENTENCE);
-            scroll.smoothScrollTo(0, Math.max(0, body.getPaddingTop() + l.getLineTop(line)));
+            int top = Math.max(0, body.getPaddingTop() + l.getLineTop(line));
+            if (readyToShow) scroll.smoothScrollTo(0, top); else scroll.scrollTo(0, top);
         });
     }
     // Kept awake only while the reading is actually running and the reader itself is on the screen, and only
@@ -1098,6 +1101,38 @@ public class MainActivity extends Activity implements ReaderService.Listener {
     // which would clip the thumb at both ends of its travel - everything else is moved in by the same amount,
     // and the amount is asked of a slider rather than written down. Margins, so that no control's own inside
     // is touched.
+    // Android 12 and later show the launcher icon while an app starts, and the app decides when it has
+    // finished starting: nothing is drawn until the first frame is allowed through, and until then the icon
+    // stays. Without this the screen appeared with no book name on it, then the name arrived and pushed
+    // everything below it down - a shuffle in front of a reader who had not asked to see the app being built.
+    // The wait is bounded: a book that will not open, or opens slowly, must not hold the icon there for good.
+    private static final long FIRST_FRAME_LIMIT_MS = 2500L;
+    private boolean readyToShow;
+    private final Runnable revealAnyway = this::markReady;
+    private void holdFirstFrame() {
+        final View content = findViewById(android.R.id.content);
+        if (content == null) { readyToShow = true; return; }
+        content.getViewTreeObserver().addOnPreDrawListener(new android.view.ViewTreeObserver.OnPreDrawListener() {
+            @Override public boolean onPreDraw() {
+                if (!readyToShow) return false;
+                content.getViewTreeObserver().removeOnPreDrawListener(this);
+                return true;
+            }
+        });
+        content.postDelayed(revealAnyway, FIRST_FRAME_LIMIT_MS);
+    }
+    private void markReady() {
+        if (readyToShow) return;
+        View content = findViewById(android.R.id.content);
+        if (content == null) { readyToShow = true; return; }
+        content.removeCallbacks(revealAnyway);
+        fitWholeLines();
+        content.post(() -> {
+            readyToShow = true;
+            if (appRoot instanceof LinearLayout) ((LinearLayout)appRoot).setLayoutTransition(collapseTransition(false));
+            content.invalidate();
+        });
+    }
     private int sliderInset = -1;
     private int contentInset() {
         if (sliderInset < 0) sliderInset = new SeekBar(this).getPaddingLeft();
