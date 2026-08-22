@@ -230,7 +230,7 @@ public class MainActivity extends Activity implements ReaderService.Listener {
         root.addView(appHeading, new LinearLayout.LayoutParams(-1, -2));
         title = label(currentName, 20, true); title.setMaxLines(3); title.setEllipsize(null); title.setPadding(0, 0, 0, currentName.isEmpty() ? 0 : dp(8)); title.setVisibility(currentName.isEmpty() ? View.GONE : View.VISIBLE);
         root.addView(title, new LinearLayout.LayoutParams(-1, -2));
-        Button open = button("＋  " + getString(R.string.open_txt)); open.setOnClickListener(v -> chooseFile()); root.addView(open, new LinearLayout.LayoutParams(-1, dp(56)));
+        Button open = button("＋  " + getString(R.string.open_txt)); open.setOnClickListener(v -> chooseFile()); root.addView(open, new LinearLayout.LayoutParams(-1, -2));
         LinearLayout header = new LinearLayout(this); header.setGravity(Gravity.CENTER_VERTICAL);
         Button recent = compactButton("☰ " + getString(R.string.recent)); recent.setOnClickListener(v -> showRecent());
         Button settings = compactButton("⚙  " + getString(R.string.more)); settings.setContentDescription(getString(R.string.more)); settings.setOnClickListener(v -> showMoreMenu());
@@ -239,12 +239,14 @@ public class MainActivity extends Activity implements ReaderService.Listener {
         // the two that are missing. The numbers differ on purpose and were found by looking rather than by
         // arithmetic: at twelve the gap read as wider than the one between the rows and at eight as narrower,
         // because that gap is a long thin line while this one is a tall narrow slot.
-        LinearLayout.LayoutParams menuButton = new LinearLayout.LayoutParams(0, dp(56), 1); menuButton.setMarginStart(dp(2));
-        header.addView(recent, new LinearLayout.LayoutParams(0, dp(56), 1)); header.addView(settings, menuButton);
+        if (!fitSideBySide(recent, settings)) header.setOrientation(LinearLayout.VERTICAL);
+        addSideBySide(header, recent, settings, dp(2));
         root.addView(header);
         LinearLayout sentenceRow = new LinearLayout(this); sentenceRow.setGravity(Gravity.CENTER_VERTICAL);
-        status = label(getString(R.string.welcome), labelTextSize(), false); status.setTextColor(appColor(R.color.text_secondary)); status.setPadding(0, dp(7), 0, dp(8)); sentenceRow.addView(status, new LinearLayout.LayoutParams(0, -2, 1));
-        Button jump = compactButton(getString(R.string.go_to_sentence)); jump.setOnClickListener(v -> showGoToSentenceDialog()); sentenceRow.addView(jump, new LinearLayout.LayoutParams(-2, dp(56)));
+        status = label(getString(R.string.welcome), labelTextSize(), false); status.setTextColor(appColor(R.color.text_secondary)); status.setPadding(0, dp(7), 0, dp(8));
+        Button jump = compactButton(getString(R.string.go_to_sentence)); jump.setOnClickListener(v -> showGoToSentenceDialog());
+        if (!fitSideBySide(status, jump)) sentenceRow.setOrientation(LinearLayout.VERTICAL);
+        addSideBySide(sentenceRow, status, jump, dp(8));
         root.addView(sentenceRow);
 
         body = label("", 20, false); body.setTextSize(getSettings().getInt("font_size", 23)); body.setTextIsSelectable(false); body.setLongClickable(false); body.setLineSpacing(0, 1.3f); body.setPadding(pad, 0, pad, 0);
@@ -286,7 +288,7 @@ public class MainActivity extends Activity implements ReaderService.Listener {
         addPlayerButton(playerButtons, voiceButton); addPlayerButton(playerButtons, previous); addPlayerButton(playerButtons, play); addPlayerButton(playerButtons, next); addPlayerButton(playerButtons, sleepButton);
         LinearLayout.LayoutParams buttonRow = new LinearLayout.LayoutParams(-1, dp(64));
         playerPanel.addView(playerButtons, buttonRow);
-        LinearLayout.LayoutParams rewindRow = new LinearLayout.LayoutParams(-1, dp(56)); rewindRow.setMargins(0, dp(16), 0, 0);
+        LinearLayout.LayoutParams rewindRow = new LinearLayout.LayoutParams(-1, -2); rewindRow.setMargins(0, dp(16), 0, 0);
         playerPanel.addView(sleepRewindButton, rewindRow);
         // The panel takes the height its own rows need instead of a number fixed in advance, so it grows with
         // the timer button and with a larger interface text size rather than cutting either off.
@@ -319,25 +321,27 @@ public class MainActivity extends Activity implements ReaderService.Listener {
     }
     private void fitWholeLines() {
         if (transitionsRunning > 0 || scroll == null || body == null) return;
-        TextView carrier = title != null && title.getVisibility() == View.VISIBLE ? title : appHeading;
-        if (carrier == null) return;
-        if (!(carrier.getLayoutParams() instanceof LinearLayout.LayoutParams)) return;
-        // What is left over is given below the name as a margin and not as padding. As padding it belonged to
-        // the name, so a screen reader drew its outline around an empty row under the words - which is what a
-        // long title made plain. As a margin the distance is the same and the outline holds only the words.
-        LinearLayout.LayoutParams room = (LinearLayout.LayoutParams)carrier.getLayoutParams();
-        int lineHeight = body.getLineHeight(), height = scroll.getHeight() + room.bottomMargin;
+        if (!(scroll.getLayoutParams() instanceof LinearLayout.LayoutParams)) return;
+        // What is left over is shared between the space above the reading and the space below it, half to
+        // each, so neither grows by more than half a line and the two stay near enough to equal to pass for
+        // it. It is given as margins around the reading rather than as padding on anything, so no control's
+        // outline holds an empty row, and it moves the reading alone - the buttons above and the player below
+        // keep their places.
+        LinearLayout.LayoutParams room = (LinearLayout.LayoutParams)scroll.getLayoutParams();
+        int base = dp(16), given = room.topMargin - base + room.bottomMargin - base;
+        int lineHeight = body.getLineHeight(), height = scroll.getHeight() + given;
         if (lineHeight <= 0 || height <= lineHeight) return;
         int extra = height % lineHeight;
-        if (extra == room.bottomMargin) return;
-        room.bottomMargin = extra; carrier.setLayoutParams(room);
+        if (extra == given) return;
+        room.topMargin = base + extra / 2; room.bottomMargin = base + extra - extra / 2;
+        scroll.setLayoutParams(room);
     }
     private TextView label(String value, float sp, boolean bold) { TextView v = new TextView(this); v.setText(value); v.setTextSize(uiSize(sp)); v.setTextColor(appColor(R.color.text_primary)); if (bold) v.setTypeface(v.getTypeface(), android.graphics.Typeface.BOLD); return v; }
     // The plain grey the platform gives a button is what made the app look like a form. A blue one reads as
     // something to press without any of the contrast being given up: the lettering stays at nine to one
     // against its own background in both themes, and the button stands as far from the page behind it.
     private Button button(String value) {
-        Button b = new Button(this); b.setText(value); b.setTextSize(uiSize(labelTextSize())); b.setAllCaps(false);
+        Button b = new Button(this); b.setText(value); b.setMinimumHeight(dp(56)); b.setTextSize(uiSize(labelTextSize())); b.setAllCaps(false);
         b.setBackgroundTintList(android.content.res.ColorStateList.valueOf(appColor(R.color.button_bg)));
         b.setTextColor(appColor(R.color.button_text));
         return b;
@@ -348,6 +352,20 @@ public class MainActivity extends Activity implements ReaderService.Listener {
     // built this way: the bin on a list row is Android's own, at Android's own size.
     private ImageButton largeIconButton(int icon, int description) { ImageButton b = imageButton(icon, description); b.setScaleType(ImageView.ScaleType.FIT_CENTER); b.setPadding(dp(8), dp(5), dp(8), dp(5)); return b; }
     private void addPlayerButton(LinearLayout row, ImageButton button) { FrameLayout column = new FrameLayout(this); column.addView(button, new FrameLayout.LayoutParams(dp(70), dp(64), Gravity.CENTER)); row.addView(column, new LinearLayout.LayoutParams(0, dp(64), 1)); }
+    private boolean fitSideBySide(TextView left, TextView right) {
+        int available = getResources().getDisplayMetrics().widthPixels - 2 * dp(16) - dp(2);
+        float needed = left.getPaint().measureText(left.getText().toString()) + left.getPaddingLeft() + left.getPaddingRight()
+            + right.getPaint().measureText(right.getText().toString()) + right.getPaddingLeft() + right.getPaddingRight()
+            + dp(16);
+        return needed <= available;
+    }
+    private void addSideBySide(LinearLayout row, View left, View right, int gap) {
+        boolean across = row.getOrientation() == LinearLayout.HORIZONTAL;
+        LinearLayout.LayoutParams first = across ? new LinearLayout.LayoutParams(0, -2, 1) : new LinearLayout.LayoutParams(-1, -2);
+        LinearLayout.LayoutParams second = across ? new LinearLayout.LayoutParams(0, -2, 1) : new LinearLayout.LayoutParams(-1, -2);
+        if (across) second.setMarginStart(gap);
+        row.addView(left, first); row.addView(right, second);
+    }
     private Button compactButton(String value) { Button b = button(value); b.setTextSize(uiSize(17)); b.setMinWidth(0); b.setMinimumWidth(0); b.setPadding(dp(12), 0, dp(12), 0); return b; }
     // The platform draws a slider as a hairline. At the sizes this app uses everywhere else it looks like a
     // scratch on the screen rather than a control, and for someone who makes out shapes but not detail it is
@@ -851,7 +869,7 @@ public class MainActivity extends Activity implements ReaderService.Listener {
         LinearLayout box = listPage();
         Button add = button(getString(R.string.add_bookmark));
         add.setOnClickListener(v -> { addBookmark(); showBookmarks(); });
-        box.addView(add, new LinearLayout.LayoutParams(-1, dp(56)));
+        box.addView(add, new LinearLayout.LayoutParams(-1, -2));
         JSONArray marks = bookmarks();
         if (marks.length() == 0) {
             TextView empty = emptyNotice(getString(R.string.no_bookmarks));
@@ -1619,9 +1637,9 @@ public class MainActivity extends Activity implements ReaderService.Listener {
         // thing reached after the title and it is clear that they govern the whole page and not one field.
         if (tabs != null) page.addView(tabs, below(dp(16)));
         ScrollView scrolling = new ScrollView(this); scrolling.addView(content); page.addView(scrolling, new LinearLayout.LayoutParams(-1, 0, 1));
-        if (bottomExtra != null) { LinearLayout.LayoutParams extraRow = new LinearLayout.LayoutParams(-1, dp(56)); extraRow.setMargins(0, dp(16), 0, 0); page.addView(bottomExtra, extraRow); }
+        if (bottomExtra != null) { LinearLayout.LayoutParams extraRow = new LinearLayout.LayoutParams(-1, -2); extraRow.setMargins(0, dp(16), 0, 0); page.addView(bottomExtra, extraRow); }
         // A page that only lists things has nothing to apply; Back is the only way out of it.
-        if (applyAction != null) { Button apply = button(getString(R.string.apply)); apply.setOnClickListener(v -> applyAction.run()); LinearLayout.LayoutParams applyRow = new LinearLayout.LayoutParams(-1, dp(56)); applyRow.setMargins(0, bottomExtra != null ? 0 : dp(16), 0, 0); page.addView(apply, applyRow); }
+        if (applyAction != null) { Button apply = button(getString(R.string.apply)); apply.setOnClickListener(v -> applyAction.run()); LinearLayout.LayoutParams applyRow = new LinearLayout.LayoutParams(-1, -2); applyRow.setMargins(0, bottomExtra != null ? 0 : dp(16), 0, 0); page.addView(apply, applyRow); }
         appRoot = page; setContentView(page); page.requestApplyInsets(); focusAfterBuild(heading);
     }
     // "Remove the book" is taken at its word: the row goes, and with it everything the app knew about that
