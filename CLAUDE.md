@@ -77,6 +77,14 @@ control and never at the bottom: giving it at both ends is what left one pair of
 and another twenty-two. Two buttons standing one on the other touch - the gap belongs between different
 kinds of thing, not between two of the same thing.
 
+**A label and its control are built by `labelled` and `labelledWithValue`, never by hand.** Every control
+keeps some width to itself - a slider needs room at both ends for its thumb, a button's background is drawn
+with empty space inside its edges - and those amounts differ, so the edges that can be seen did not line up.
+`contentInset` asks a slider what it keeps and `field` moves everything else in by the same, in margins, so
+nothing's own inside is touched. Two numbers are deliberately off the scale and were found by looking, not by
+arithmetic: 10dp between the two menu buttons where the rows stand 12 apart, because a tall narrow gap reads
+wider than a long thin one. Both times the numbers were evened up instead, the screen looked worse.
+
 **A slider is drawn at the thickness it is given.** `thicken` pins the height of both layers, because a
 progress drawable is otherwise stretched to fill its row, and the same two lines of code produced a fatter
 bar on the player than in Options.

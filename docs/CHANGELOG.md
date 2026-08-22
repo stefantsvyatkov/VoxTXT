@@ -20,6 +20,9 @@
 6. The open tab in Voice settings and in Recent files is filled in, so which one is open can be seen and not only heard.
 7. The dropdowns have an outline, so they read as fields rather than as a line of text.
 8. A dropdown long enough to scroll opens with the screen reader on its first entry.
+9. The player sits at the bottom of the screen and its symbols are larger. The row under it is there only while the sleep timer button is, so with no timer running the reading has about three more lines; the button fades in and out rather than jumping, and on a phone with animations turned off it simply appears.
+10. Headings, fields and sliders begin on the same line down the page, every button is the same height, and the text runs on one scale of sizes.
+11. The Custom row of the sleep timer shows the minutes chosen at its right-hand end, instead of naming itself a second time above its slider.
 
 ### Fixed
 
@@ -30,7 +33,9 @@
 5. Removing an entry from Recent files or from Bookmarks sent the screen reader back to the top of the page instead of leaving it where the entry stood.
 6. The Interface text size slider was the one slider left thin and grey.
 7. Reading gave up when the screen reader spoke through the same voice engine. A busy engine was treated as a failed one, so the book either stopped with a message about the voice or stood in silence with the player still showing that it was reading. It now waits for the engine and says the sentence again once it is free.
-8. Names in Recent files, in Bookmarks and in the sleep timer were invisible - white on white in one theme and black on black in the other. The screen reader read them out all along.
+8. The File progress slider was drawn thicker than the sliders in Options, although both come from the same two lines of code: a progress bar is stretched to fill whatever row it is put in.
+9. Scrolling to the sentence being read left a fraction of a line showing along the top edge, and the bottom edge cut through one. The reading now shows whole lines at any text size.
+10. Names in Recent files, in Bookmarks and in the sleep timer were invisible - white on white in one theme and black on black in the other. The screen reader read them out all along.
 
 ## Changes in Beta 4
 

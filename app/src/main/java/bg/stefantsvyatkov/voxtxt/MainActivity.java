@@ -233,7 +233,12 @@ public class MainActivity extends Activity implements ReaderService.Listener {
         LinearLayout header = new LinearLayout(this); header.setGravity(Gravity.CENTER_VERTICAL);
         Button recent = compactButton("☰ " + getString(R.string.recent)); recent.setOnClickListener(v -> showRecent());
         Button settings = compactButton("⚙  " + getString(R.string.more)); settings.setContentDescription(getString(R.string.more)); settings.setOnClickListener(v -> showMoreMenu());
-        LinearLayout.LayoutParams menuButton = new LinearLayout.LayoutParams(0, dp(56), 1); menuButton.setMarginStart(dp(4));
+        // Ten points between these two, where the rows above and below stand twelve apart. The background
+        // Android draws for a button already holds four points at its sides and six at its top, so this adds
+        // the two that are missing. The numbers differ on purpose and were found by looking rather than by
+        // arithmetic: at twelve the gap read as wider than the one between the rows and at eight as narrower,
+        // because that gap is a long thin line while this one is a tall narrow slot.
+        LinearLayout.LayoutParams menuButton = new LinearLayout.LayoutParams(0, dp(56), 1); menuButton.setMarginStart(dp(2));
         header.addView(recent, new LinearLayout.LayoutParams(0, dp(56), 1)); header.addView(settings, menuButton);
         root.addView(header);
         LinearLayout sentenceRow = new LinearLayout(this); sentenceRow.setGravity(Gravity.CENTER_VERTICAL);
