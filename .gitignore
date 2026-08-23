@@ -39,3 +39,6 @@ google-services.json
 
 # Screenshots from the phone, kept for looking at rather than for shipping.
 Screenshots/
+
+# Real books, used for trying the formats out against something other than a made-up file.
+Books/

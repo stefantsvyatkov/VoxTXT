@@ -62,6 +62,7 @@ public class ReaderService extends Service implements TextToSpeech.OnInitListene
     private final Handler lifecycleHandler = new Handler(Looper.getMainLooper());
     private boolean reachedEnd;
     private final ArrayList<Range> sentences = new ArrayList<>();
+    private final ArrayList<Integer> paragraphStart = new ArrayList<>();
     private TextToSpeech tts, previewTts, previewSpeaker;
     private String previewEngine = "", previewVoiceName = "", previewText, activePreviewUtterance = "";
     private int previewRate, previewPitch, previewVolume, previewRetries;
@@ -374,6 +375,70 @@ public class ReaderService extends Service implements TextToSpeech.OnInitListene
         for (int end = it.next(); end != BreakIterator.DONE; start = end, end = it.next())
             if (!text.substring(start, end).trim().isEmpty()) sentences.add(new Range(start, end));
         if (sentences.isEmpty() && !text.trim().isEmpty()) sentences.add(new Range(0, text.length()));
+        findParagraphs();
+    }
+    // Where the paragraphs are, counted in sentences: paragraphStart holds the number of the sentence each one
+    // begins with. Every format arrives here as plain text with its blocks already separated by a new line -
+    // that is done when a book is read out of FB2, EPUB or DOCX, and by the cleaner for a web page - so the
+    // marks are already in the text and none of this is guessed at.
+    //
+    // Plain text is the one that has to be looked at. Of ninety-six real books, ninety open a paragraph on
+    // every line and four separate them with a blank line; both are read straight off. One was wrapped by hand
+    // at a fixed width, where a new line ends nothing - and that one is recognised by measuring the book
+    // rather than by a rule written here: if nearly every line stops at the same place the lines are wrapped,
+    // and then only a blank line or an indented start opens a paragraph.
+    private void findParagraphs() {
+        paragraphStart.clear();
+        if (sentences.isEmpty()) return;
+        boolean wrapped = looksHandWrapped();
+        paragraphStart.add(0);
+        for (int i = 1; i < sentences.size(); i++) {
+            // The sentence iterator hands the space after a sentence to that sentence, so what lies between
+            // two of them is usually nothing at all. The white space has to be walked back into the sentence
+            // before it to be seen - which is why the first attempt at this found sixty-four paragraphs in a
+            // novel: it was counting only the blank lines that had been dropped as empty sentences.
+            int ink = sentences.get(i - 1).end;
+            while (ink > 0 && Character.isWhitespace(text.charAt(ink - 1))) ink--;
+            String between = text.substring(ink, sentences.get(i).start);
+            int breaks = 0;
+            for (int c = 0; c < between.length(); c++) if (between.charAt(c) == '\n') breaks++;
+            if (breaks == 0) continue;
+            if (breaks > 1 || !wrapped || startsAParagraph(sentences.get(i).start)) paragraphStart.add(i);
+        }
+    }
+    private boolean startsAParagraph(int at) {
+        int line = text.lastIndexOf('\n', Math.max(0, at - 1)) + 1;
+        if (line >= at) return false;
+        char first = text.charAt(line);
+        return first == ' ' || first == '\t' || first == '-' || first == '\u2013' || first == '\u2014';
+    }
+    // A book wrapped by hand has nearly all of its lines stopping at the same width. One written a paragraph
+    // to a line has lines of every length, most of them longer than any hand wrapping would allow.
+    private boolean looksHandWrapped() {
+        ArrayList<Integer> lengths = new ArrayList<>();
+        for (String line : text.split("\n", -1)) if (!line.trim().isEmpty()) lengths.add(line.length());
+        if (lengths.size() < 50) return false;
+        java.util.Collections.sort(lengths);
+        return lengths.get((int)(lengths.size() * 0.9)) <= 110 && lengths.get(lengths.size() / 2) > 40;
+    }
+    // Moving by paragraphs is moving by sentences underneath, so every rule that was paid for in the player -
+    // the settle between taps, not reporting the momentary stop, stopping at either end - holds here without
+    // being written a second time. Asking to go past the last paragraph lands on the last sentence, so that
+    // whoever is holding the button down is told that there is nothing further.
+    public void moveParagraph(int delta) {
+        if (paragraphStart.isEmpty() || sentences.isEmpty()) { move(delta); return; }
+        int wanted = paragraphOf(current) + delta;
+        if (wanted >= paragraphStart.size()) { move(sentences.size() - 1 - current); return; }
+        move(sentenceOfParagraph(Math.max(0, wanted)) - current);
+    }
+    public int paragraphCount() { return paragraphStart.size(); }
+    public int paragraphOf(int sentence) {
+        int found = java.util.Collections.binarySearch(paragraphStart, sentence);
+        return found >= 0 ? found : Math.max(0, -found - 2);
+    }
+    public int sentenceOfParagraph(int paragraph) {
+        if (paragraphStart.isEmpty()) return 0;
+        return paragraphStart.get(Math.max(0, Math.min(paragraph, paragraphStart.size() - 1)));
     }
     // Only what a single sentence needs. Speech rate, pitch and the voice are not set again here: Android
     // keeps them and sends them along with every request anyway, so re-applying them - and scanning the

@@ -128,13 +128,66 @@ final class DocumentText {
         return fallback;
     }
 
-    static String extract(String kind, byte[] bytes) throws IOException {
+    static String extract(String kind, byte[] bytes) throws IOException { return extract(kind, bytes, ""); }
+    // notePrefix is the words a footnote is announced with, and it comes from the screen because that is
+    // where the language lives. Empty means the notes are left out, which is what the older behaviour was.
+    static String extract(String kind, byte[] bytes, String notePrefix) throws IOException {
         switch (kind) {
-            case "fb2": return fromFb2(bytes);
-            case "epub": return fromEpub(bytes);
-            case "docx": return fromDocx(bytes);
+            case "fb2": return fromFb2(bytes, notePrefix);
+            case "epub": return fromEpub(bytes, notePrefix);
+            case "docx": return fromDocx(bytes, notePrefix);
             default: throw new IOException("unsupported");
         }
+    }
+
+    // A note is read where it is referred to, not left in a heap at the end of the book where half of what it
+    // explains has been forgotten. The little number in the text is swapped for a mark, the book is turned
+    // into text as before, and then each mark is taken out and its note put in after the end of the sentence
+    // it stood in. After the sentence and not at the mark itself: a note almost always sits in the middle of
+    // a thought, and read there it cuts the thought in half.
+    private static final char NOTE_OPEN = '\uE000', NOTE_CLOSE = '\uE001';
+    private static String mark(int index) { return NOTE_OPEN + String.valueOf(index) + NOTE_CLOSE; }
+    private static String weaveNotes(String text, List<String> notes, String prefix) {
+        for (int i = notes.size() - 1; i >= 0; i--) {
+            String mark = mark(i);
+            int at = text.indexOf(mark);
+            if (at < 0) continue;
+            text = text.substring(0, at) + text.substring(at + mark.length());
+            String note = notes.get(i).trim();
+            if (note.isEmpty()) continue;
+            if (".!?".indexOf(note.charAt(note.length() - 1)) < 0) note = note + ".";
+            int end = sentenceEndAfter(text, at);
+            text = text.substring(0, end) + " " + prefix + " " + note + text.substring(end);
+        }
+        return text;
+    }
+    // Only the sentence around the mark is looked at, not the whole book: a book with five hundred notes
+    // would otherwise be walked five hundred times over.
+    private static int sentenceEndAfter(String text, int at) {
+        int back = at;
+        while (back > 0 && Character.isWhitespace(text.charAt(back - 1))) back--;
+        // The mark already stands after the end of a sentence; nothing has to be looked for.
+        if (back > 0 && ".!?".indexOf(text.charAt(back - 1)) >= 0) return back;
+        String window = text.substring(at, Math.min(text.length(), at + 2000));
+        java.text.BreakIterator it = java.text.BreakIterator.getSentenceInstance(Locale.getDefault());
+        it.setText(window);
+        int end = it.following(0);
+        int absolute = end == java.text.BreakIterator.DONE ? at + window.length() : at + end;
+        while (absolute > at && Character.isWhitespace(text.charAt(absolute - 1))) absolute--;
+        return absolute;
+    }
+    // The title of a note is usually the very number that pointed at it. Read out, it would say that number a
+    // second time, so a title that is nothing but a number is dropped and a real one is kept.
+    private static String noteBody(Element note) {
+        Element title = note.selectFirst("title");
+        if (title != null && title.text().trim().replaceAll("[.\\s]", "").matches("[0-9]+[\\p{L}]?")) title.remove();
+        // The note often opens with the very number that pointed at it, written as [1] or as 1. - the
+        // link back to the place it came from. Only those two shapes are taken off, so that a note which
+        // genuinely begins with a year is left alone.
+        return collapse(ArticleReader.plainText(note))
+            .replaceAll("^(\\[[0-9]+\\][.)]?|[0-9]+[.)])\\s+", "")
+            // and often closes with the arrow that leads back to it, which is a picture rather than a word.
+            .replaceAll("[\u21A9\u2190\u2191\uFE0E]+\\s*$", "").trim();
     }
 
     // FB2 is one XML file holding the whole book. Everything worth reading is in its body elements; a body
@@ -145,23 +198,38 @@ final class DocumentText {
     // The little numbers that point at those notes are removed as well. They sit tight against the word they
     // follow, so what reaches the synthesizer is "the tavern1" - and what comes out is the word with a digit
     // stuck to its end, in the middle of a sentence.
-    private static String fromFb2(byte[] bytes) throws IOException {
+    private static String fromFb2(byte[] bytes, String notePrefix) throws IOException {
         Document book = xml(new String(bytes, charsetOfXml(bytes)));
-        book.select("a[type=note], a[type=comment]").remove();
+        // The notes of an FB2 are gathered in a body of their own at the end, each in a section carrying the
+        // name the little number points at.
+        Map<String, String> notes = new HashMap<>();
+        for (Element body : book.select("body"))
+            if ("notes".equalsIgnoreCase(body.attr("name")))
+                for (Element section : body.select("section[id]")) notes.put(section.attr("id"), noteBody(section));
+        List<String> used = new ArrayList<>();
+        for (Element link : book.select("a[type=note], a[type=comment]")) {
+            String href = link.attr("l:href");
+            if (href.isEmpty()) href = link.attr("xlink:href");
+            if (href.isEmpty()) href = link.attr("href");
+            String note = notes.get(href.startsWith("#") ? href.substring(1) : href);
+            if (notePrefix.isEmpty() || note == null || note.trim().isEmpty()) { link.remove(); continue; }
+            used.add(note);
+            link.replaceWith(new org.jsoup.nodes.TextNode(mark(used.size() - 1)));
+        }
         StringBuilder text = new StringBuilder();
         for (Element body : book.select("body")) {
             if ("notes".equalsIgnoreCase(body.attr("name"))) continue;
             append(text, ArticleReader.plainText(body));
         }
         if (text.length() == 0) throw new IOException("empty fb2");
-        return text.toString().trim();
+        return weaveNotes(text.toString().trim(), used, notePrefix);
     }
 
     // EPUB is a zip. Which file inside it is the book, and in what order its chapters go, is written down in
     // the archive itself: container.xml points at the package file, and the spine of that package lists the
     // chapters in reading order. Following that is the difference between a book and a pile of chapters in
     // whatever order the archive happened to store them.
-    private static String fromEpub(byte[] bytes) throws IOException {
+    private static String fromEpub(byte[] bytes, String notePrefix) throws IOException {
         Map<String, byte[]> archive = unzip(bytes);
         String opfPath = opfPath(archive);
         byte[] opfBytes = archive.get(opfPath);
@@ -180,24 +248,99 @@ final class DocumentText {
         // stores them is a poor second, but it is better than refusing the book.
         if (order.isEmpty()) for (String name : archive.keySet()) if (isChapter(name)) order.add(name);
 
+        // Notes are gathered before a word is read, because an EPUB is free to keep them anywhere: beside the
+        // number that points at them, at the end of the chapter, or all together in a file of their own at the
+        // end of the book. Which places are wanted is settled first, by looking for what the numbers point at,
+        // so that only those are collected and nothing else is carried about.
+        Map<String, String> notes = new HashMap<>();
+        if (!notePrefix.isEmpty()) {
+            Map<String, List<String>> wanted = new HashMap<>();
+            for (String name : order) {
+                byte[] chapter = archive.get(name);
+                if (chapter == null) continue;
+                Document page = Jsoup.parse(new String(chapter, StandardCharsets.UTF_8));
+                for (Element link : page.select("a")) {
+                    if (!isNoteRef(link)) continue;
+                    String target = noteTarget(name, link.attr("href"));
+                    if (target == null) continue;
+                    String file = target.substring(0, target.indexOf('#')), id = target.substring(target.indexOf('#') + 1);
+                    List<String> ids = wanted.get(file);
+                    if (ids == null) { ids = new ArrayList<>(); wanted.put(file, ids); }
+                    if (!ids.contains(id)) ids.add(id);
+                }
+            }
+            for (Map.Entry<String, List<String>> entry : wanted.entrySet()) {
+                byte[] chapter = archive.get(entry.getKey());
+                if (chapter == null) continue;
+                Document page = Jsoup.parse(new String(chapter, StandardCharsets.UTF_8));
+                for (String id : entry.getValue()) {
+                    Element note = page.getElementById(id);
+                    if (note == null) continue;
+                    String body = noteBody(note);
+                    if (!body.isEmpty()) notes.put(entry.getKey() + "#" + id, body);
+                }
+            }
+        }
         StringBuilder text = new StringBuilder();
         for (String name : order) {
             byte[] chapter = archive.get(name);
             if (chapter == null) continue;
             Document page = Jsoup.parse(new String(chapter, StandardCharsets.UTF_8));
             page.select("script, style, nav, svg").remove();
-            // The same little numbers, under the names EPUB gives them. The note itself is left alone here:
-            // in an EPUB it is usually a chapter the book declares like any other, and dropping a declared
-            // chapter would be deciding what is worth reading.
-            for (Element link : page.select("a"))
-                if ("noteref".equalsIgnoreCase(link.attr("epub:type")) || "doc-noteref".equalsIgnoreCase(link.attr("role")))
-                    link.remove();
-            if (page.body() != null) append(text, ArticleReader.plainText(page.body()));
+            // A note is read where it is referred to, and taken out of the place it was kept, so that it is
+            // not heard a second time when the reading reaches the end of the chapter or the end of the book.
+            // One note may be pointed at from several places; it is read at every one of them.
+            List<String> used = new ArrayList<>();
+            for (Element link : page.select("a")) {
+                if (!isNoteRef(link)) continue;
+                String target = noteTarget(name, link.attr("href"));
+                String body = target == null ? null : notes.get(target);
+                if (body == null) { link.remove(); continue; }
+                used.add(body);
+                link.replaceWith(new org.jsoup.nodes.TextNode(mark(used.size() - 1)));
+            }
+            for (String target : notes.keySet())
+                if (target.startsWith(name + "#")) {
+                    Element note = page.getElementById(target.substring(target.indexOf('#') + 1));
+                    if (note != null) note.remove();
+                }
+            if (page.body() != null) append(text, weaveNotes(ArticleReader.plainText(page.body()), used, notePrefix));
         }
         if (text.length() == 0) throw new IOException("empty epub");
         return text.toString().trim();
     }
 
+    private static String collapse(String value) { return value.replaceAll("\\s+", " ").trim(); }
+    // Word keeps footnotes and notes at the end of the document in two files of their own, each note under a
+    // number the text refers to. The two sets number themselves separately, so a note is remembered under its
+    // kind as well as its number. The first two entries of either file are the separator lines Word writes
+    // into every document and are not notes at all.
+    private static void readNotes(byte[] part, String tag, String kind, Map<String, String> into, String notePrefix) {
+        if (part == null || notePrefix.isEmpty()) return;
+        for (Element note : xml(new String(part, StandardCharsets.UTF_8)).getElementsByTag(tag)) {
+            String id = note.attr("w:id");
+            if (id.isEmpty() || id.startsWith("-") || "0".equals(id)) continue;
+            String body = collapse(runsOf(note));
+            if (!body.isEmpty()) into.put(kind + id, body);
+        }
+    }
+    private static String runsOf(Element node) {
+        StringBuilder value = new StringBuilder();
+        for (Element run : node.getElementsByTag("w:t")) value.append(run.wholeText()).append(' ');
+        return value.toString();
+    }
+    private static boolean isNoteRef(Element link) {
+        return "noteref".equalsIgnoreCase(link.attr("epub:type")) || "doc-noteref".equalsIgnoreCase(link.attr("role"));
+    }
+    // Where a note lives, as a path inside the archive and an id within it. A bare #id means the same file.
+    private static String noteTarget(String from, String href) {
+        if (href.isEmpty() || !href.contains("#")) return null;
+        String id = href.substring(href.indexOf('#') + 1);
+        if (id.isEmpty()) return null;
+        if (href.startsWith("#")) return from + "#" + id;
+        String base = from.contains("/") ? from.substring(0, from.lastIndexOf('/') + 1) : "";
+        return resolve(base, href) + "#" + id;
+    }
     private static boolean isChapter(String name) {
         String lower = name.toLowerCase(Locale.ROOT);
         return lower.endsWith(".xhtml") || lower.endsWith(".html") || lower.endsWith(".htm");
@@ -230,10 +373,14 @@ final class DocumentText {
     // DOCX is a zip too, and all the words are in one file inside it. Every w:p is a paragraph and every w:t a
     // run of text within it; a paragraph can be broken into many runs by nothing more than a change of font,
     // so the runs are joined and the break is made at the paragraph.
-    private static String fromDocx(byte[] bytes) throws IOException {
+    private static String fromDocx(byte[] bytes, String notePrefix) throws IOException {
         Map<String, byte[]> archive = unzip(bytes);
         byte[] main = archive.get("word/document.xml");
         if (main == null) throw new IOException("no document part");
+        Map<String, String> notes = new HashMap<>();
+        readNotes(archive.get("word/footnotes.xml"), "w:footnote", "f", notes, notePrefix);
+        readNotes(archive.get("word/endnotes.xml"), "w:endnote", "e", notes, notePrefix);
+        List<String> used = new ArrayList<>();
         Document document = xml(new String(main, StandardCharsets.UTF_8));
         StringBuilder text = new StringBuilder();
         for (Element paragraph : document.getElementsByTag("w:p")) {
@@ -245,12 +392,16 @@ final class DocumentText {
                 if ("w:t".equals(tag)) line.append(node.wholeText());
                 else if ("w:tab".equals(tag)) line.append(' ');
                 else if ("w:br".equals(tag) || "w:cr".equals(tag)) line.append('\n');
+                else if ("w:footnoteReference".equals(tag) || "w:endnoteReference".equals(tag)) {
+                    String note = notes.get(("w:footnoteReference".equals(tag) ? "f" : "e") + node.attr("w:id"));
+                    if (note != null && !note.isEmpty()) { used.add(note); line.append(mark(used.size() - 1)); }
+                }
             }
             String value = line.toString().replaceAll("[ \t]+", " ").trim();
             if (!value.isEmpty()) append(text, value);
         }
         if (text.length() == 0) throw new IOException("empty docx");
-        return text.toString().trim();
+        return weaveNotes(text.toString().trim(), used, notePrefix);
     }
 
     private static Document xml(String content) { return Jsoup.parse(content, "", Parser.xmlParser()); }

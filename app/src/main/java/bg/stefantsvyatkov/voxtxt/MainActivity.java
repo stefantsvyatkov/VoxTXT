@@ -244,7 +244,7 @@ public class MainActivity extends Activity implements ReaderService.Listener {
         root.addView(header);
         LinearLayout sentenceRow = new LinearLayout(this); sentenceRow.setGravity(Gravity.CENTER_VERTICAL);
         status = label(getString(R.string.welcome), labelTextSize(), false); status.setTextColor(appColor(R.color.text_secondary)); status.setPadding(0, dp(7), 0, dp(8));
-        Button jump = compactButton(getString(R.string.go_to_sentence)); jump.setOnClickListener(v -> showGoToSentenceDialog());
+        Button jump = compactButton(getString(R.string.navigation)); jump.setOnClickListener(v -> showNavigationDialog());
         if (!fitSideBySide(status, jump)) sentenceRow.setOrientation(LinearLayout.VERTICAL);
         addSideBySide(sentenceRow, status, jump, dp(8));
         root.addView(sentenceRow);
@@ -286,6 +286,7 @@ public class MainActivity extends Activity implements ReaderService.Listener {
         play.setOnClickListener(v -> { if (reader == null) return; cancelAutomaticResume(true); if (reader.isPlaying()) reader.pause(); else reader.play(); });
         attachSeekButton(next, 1);
         addPlayerButton(playerButtons, voiceButton); addPlayerButton(playerButtons, previous); addPlayerButton(playerButtons, play); addPlayerButton(playerButtons, next); addPlayerButton(playerButtons, sleepButton);
+        updateNavLabels();
         LinearLayout.LayoutParams buttonRow = new LinearLayout.LayoutParams(-1, dp(64));
         playerPanel.addView(playerButtons, buttonRow);
         LinearLayout.LayoutParams rewindRow = new LinearLayout.LayoutParams(-1, -2); rewindRow.setMargins(0, dp(16), 0, 0);
@@ -416,6 +417,20 @@ public class MainActivity extends Activity implements ReaderService.Listener {
         int pixels = style.getDimensionPixelSize(0, 0); style.recycle();
         return pixels <= 0 ? fallbackSp : pixels / getResources().getDisplayMetrics().scaledDensity;
     }
+    private boolean byParagraph() { return "paragraph".equals(getSettings().getString("nav_unit", "sentence")); }
+    private void stepReading(int direction, int step) {
+        if (reader == null) return;
+        if (byParagraph()) reader.moveParagraph(direction * step); else reader.move(direction * step);
+    }
+    // What the two buttons under the player are called follows what they now do. The rule in this app is that
+    // a screen reader says what is written on a control, and on a control with no writing on it that is its
+    // description.
+    private void updateNavLabels() {
+        if (previous == null || next == null) return;
+        boolean paragraphs = byParagraph();
+        previous.setContentDescription(getString(paragraphs ? R.string.previous_paragraph : R.string.previous_sentence));
+        next.setContentDescription(getString(paragraphs ? R.string.next_paragraph : R.string.next_sentence));
+    }
     private int listRowHeight() { return systemDimension(android.R.attr.listPreferredItemHeight, 64); }
     private int listRowSidePadding() { return systemDimension(android.R.attr.listPreferredItemPaddingLeft, 16); }
     private int dialogPadding() { return systemDimension(android.R.attr.dialogPreferredPadding, 24); }
@@ -472,7 +487,7 @@ public class MainActivity extends Activity implements ReaderService.Listener {
                 boolean plain = "txt".equals(kind) && !wrapped;
                 // A plain text file is guessed at, because nothing in it says how it was written. The other
                 // three say so themselves, so they are simply read.
-                String loaded = ("txt".equals(kind) ? decode(bytes) : DocumentText.extract(kind, bytes))
+                String loaded = ("txt".equals(kind) ? decode(bytes) : DocumentText.extract(kind, bytes, getString(R.string.footnote_prefix)))
                     .replace("\r\n", "\n").replace('\r', '\n');
                 if (loaded.trim().isEmpty()) throw new IOException(getString(R.string.file_empty));
                 String name = DocumentText.titleOf(kind, bytes, withoutExtension(fileName)); runOnUiThread(() -> {
@@ -551,9 +566,10 @@ public class MainActivity extends Activity implements ReaderService.Listener {
     }
     // Text shared without an address in it - a passage copied out of an app, a note. There is nothing to
     // fetch and nothing to strip; it is read as it arrived, and Save as TXT keeps it if it is worth keeping.
-    private void showSharedText(String shared) {
+    private void showSharedText(String shared) { showSharedText(shared, getString(R.string.shared_text), "shared:"); }
+    private void showSharedText(String shared, String name, String kind) {
         loadedText = shared; fromPlainTextFile = false; fromWeb = true; fromWebPage = false;
-        currentUri = "shared:" + Integer.toHexString(shared.hashCode()); currentName = getString(R.string.shared_text);
+        currentUri = kind + Integer.toHexString(shared.hashCode()); currentName = name;
         title.setText(currentName); title.setVisibility(View.VISIBLE); title.setPadding(0, 0, 0, dp(8)); loading = false;
         rememberPage(shared, false);
         if (reader == null) { pendingText = shared; resumeAfterFilePickerLoad = true; }
@@ -700,7 +716,9 @@ public class MainActivity extends Activity implements ReaderService.Listener {
         marked.setSpan(highlightSpan, r.start, r.end, Spannable.SPAN_EXCLUSIVE_EXCLUSIVE);
         marked.setSpan(highlightInk, r.start, r.end, Spannable.SPAN_EXCLUSIVE_EXCLUSIVE);
         body.setContentDescription(document.substring(r.start, r.end).trim());
-        status.setText(getString(R.string.sentence_count, index + 1, count));
+        if (byParagraph() && reader != null && reader.paragraphCount() > 0)
+            status.setText(getString(R.string.paragraph_count, reader.paragraphOf(index) + 1, reader.paragraphCount()));
+        else status.setText(getString(R.string.sentence_count, index + 1, count));
         int percent = count <= 1 ? 0 : Math.round(index * 100f / (count - 1));
         updatingBookProgress = true; bookProgress.setProgress(percent); updatingBookProgress = false; updateBookProgressDescription(percent);
         body.post(() -> {
@@ -774,8 +792,15 @@ public class MainActivity extends Activity implements ReaderService.Listener {
         updatePercentValue(bookProgress, percent);
     }
 
+    // How far one step of a fast seek reaches. Sentences and paragraphs keep separate numbers because they
+    // are separate distances: a paragraph is about five sentences, so the same figure would mean quite
+    // different journeys.
+    private int fastSeekStep() {
+        android.content.SharedPreferences p = getSettings();
+        return byParagraph() ? p.getInt("paragraph_step", 2) : p.getInt("sentence_step", 5);
+    }
     private void attachSeekButton(ImageButton button, int direction) {
-        button.setOnClickListener(v -> { if (reader != null && !fastSeeking) { boolean announce = !reader.isPlaying(); reader.move(direction); if (announce) announceCurrentSentence(); } });
+        button.setOnClickListener(v -> { if (reader != null && !fastSeeking) { boolean announce = !reader.isPlaying(); stepReading(direction, 1); if (announce) announceCurrentSentence(); } });
         button.setOnLongClickListener(v -> {
             if (reader == null || reader.getCount() == 0) return false;
             // A resume left over from the previous release must not fire while this seek is under way.
@@ -787,7 +812,7 @@ public class MainActivity extends Activity implements ReaderService.Listener {
                 @Override public void run() {
                     if (!fastSeeking || reader == null) return;
                     int before = reader.getCurrent();
-                    reader.move(direction * 5);
+                    stepReading(direction, fastSeekStep());
                     // At either end the sentence stops changing. Carrying on would tick against a wall for as
                     // long as the finger is down - and if the release is ever missed, for as long as the app
                     // is open, moving the reading back to the same place every few hundred milliseconds. That
@@ -827,26 +852,81 @@ public class MainActivity extends Activity implements ReaderService.Listener {
         play.setImageResource(reading ? R.drawable.ic_pause : R.drawable.ic_play);
         play.setContentDescription(getString(reading ? R.string.pause_sentence : R.string.play_sentence));
     }
-    private void announceCurrentSentence() { if (reader == null || reader.getCount() == 0) return; status.announceForAccessibility(getString(R.string.sentence_position, reader.getCurrent() + 1)); }
-
-    private void showGoToSentenceDialog() {
-        if (reader == null || reader.getCount() == 0) return; pausePlaybackOutsideReader(); final boolean[] applied = {false}; EditText input = new EditText(this); input.setInputType(android.text.InputType.TYPE_CLASS_NUMBER); input.setTextSize(uiSize(20)); input.setHint("1-" + reader.getCount()); input.setContentDescription(getString(R.string.sentence_number)); input.setPadding(dp(24), dp(12), dp(24), dp(12));
-        LinearLayout content = new LinearLayout(this); content.setOrientation(LinearLayout.VERTICAL); content.setPadding(dialogPadding(), dp(16), dialogPadding(), dp(16));
-        TextView heading = label(getString(R.string.go_to_sentence), 24, true); if (Build.VERSION.SDK_INT >= 28) heading.setAccessibilityHeading(true); content.addView(heading); content.addView(input, new LinearLayout.LayoutParams(-1, -2));
-        AlertDialog dialog = new AlertDialog.Builder(this).setView(content).setNegativeButton(R.string.cancel, null).setPositiveButton(R.string.apply, (d, w) -> {
-            try { int number = Integer.parseInt(input.getText().toString()); if (number < 1 || number > reader.getCount()) { toast(getString(R.string.invalid_sentence, reader.getCount())); return; } applied[0] = true; reader.seekTo(number - 1); pausedAutomaticallyOutsideReader = false; scheduleAutomaticPlayback(); }
-            catch (NumberFormatException e) { toast(getString(R.string.invalid_sentence, reader.getCount())); }
-        }).create(); dialog.setOnDismissListener(d -> { if (!applied[0]) returnToReader(); }); dialog.show(); focusHeading(heading);
+    // Where the seeking has landed, said in whatever is being moved by. Announcing a sentence number while
+    // the buttons are stepping through paragraphs told the listener about a unit they had not chosen.
+    private void announceCurrentSentence() {
+        if (reader == null || reader.getCount() == 0) return;
+        boolean paragraphs = byParagraph() && reader.paragraphCount() > 0;
+        status.announceForAccessibility(paragraphs
+            ? getString(R.string.paragraph_position, reader.paragraphOf(reader.getCurrent()) + 1)
+            : getString(R.string.sentence_position, reader.getCurrent() + 1));
     }
 
-    // One entry point for everything that is not the reading itself. A plain list is used rather than a
-    // floating menu: it is themed like the rest of the app and a screen reader walks it top to bottom.
+    private void showNavigationDialog() {
+        if (reader == null || reader.getCount() == 0) return;
+        pausePlaybackOutsideReader();
+        final boolean[] applied = {false};
+        final boolean[] paragraphs = {byParagraph()};
+        LinearLayout content = new LinearLayout(this); content.setOrientation(LinearLayout.VERTICAL);
+        content.setPadding(dialogPadding(), dp(16), dialogPadding(), dp(16));
+        TextView heading = label(getString(R.string.navigation), 24, true);
+        if (Build.VERSION.SDK_INT >= 28) heading.setAccessibilityHeading(true);
+        content.addView(heading);
+        RadioGroup units = new RadioGroup(this);
+        RadioButton bySentence = new RadioButton(this), byParagraphs = new RadioButton(this);
+        bySentence.setText(R.string.nav_sentences); byParagraphs.setText(R.string.nav_paragraphs);
+        bySentence.setTextSize(uiSize(labelTextSize())); byParagraphs.setTextSize(uiSize(labelTextSize()));
+        final int sentenceId = View.generateViewId(), paragraphId = View.generateViewId();
+        bySentence.setId(sentenceId); byParagraphs.setId(paragraphId);
+        units.addView(bySentence, new RadioGroup.LayoutParams(-1, -2)); units.addView(byParagraphs, new RadioGroup.LayoutParams(-1, -2));
+        units.check(paragraphs[0] ? paragraphId : sentenceId);
+        content.addView(units, field(dp(16)));
+        EditText input = new EditText(this); input.setInputType(android.text.InputType.TYPE_CLASS_NUMBER);
+        input.setTextSize(uiSize(20)); input.setPadding(dialogPadding(), dp(12), dialogPadding(), dp(12));
+        content.addView(input, field(dp(16)));
+        Runnable describe = () -> {
+            String hint = getString(paragraphs[0] ? R.string.go_to_paragraph_hint : R.string.go_to_sentence_hint,
+                paragraphs[0] ? reader.paragraphCount() : reader.getCount());
+            input.setHint(hint); input.setContentDescription(hint);
+        };
+        describe.run();
+        units.setOnCheckedChangeListener((group, id) -> { paragraphs[0] = id == paragraphId; describe.run(); });
+        AlertDialog dialog = new AlertDialog.Builder(this).setView(content).setNegativeButton(R.string.close, null)
+            .setPositiveButton(R.string.apply, null).create();
+        dialog.setOnDismissListener(d -> { if (!applied[0]) returnToReader(); });
+        dialog.show();
+        // The unit is kept the moment Apply is pressed, whether or not a number was typed: choosing what to
+        // move by is a decision of its own, and most of the time it is the only one being made here.
+        dialog.getButton(AlertDialog.BUTTON_POSITIVE).setOnClickListener(v -> {
+            getSettings().edit().putString("nav_unit", paragraphs[0] ? "paragraph" : "sentence").apply();
+            updateNavLabels();
+            int total = paragraphs[0] ? reader.paragraphCount() : reader.getCount();
+            String typed = input.getText().toString().trim();
+            if (!typed.isEmpty()) {
+                int number;
+                try { number = Integer.parseInt(typed); } catch (NumberFormatException e) { number = -1; }
+                if (number < 1 || number > total) { toast(getString(R.string.invalid_sentence, total)); return; }
+                applied[0] = true;
+                jumpFromList(paragraphs[0] ? reader.sentenceOfParagraph(number - 1) : number - 1);
+            }
+            if (reader != null) showCurrent(reader.getCurrent(), reader.getCount());
+            dialog.dismiss();
+        });
+        focusHeading(heading);
+    }
+    private void goToStart() {
+        if (reader == null || reader.getCount() == 0) { returnToReader(); return; }
+        cancelAutomaticResume(true);
+        reader.seekTo(0); reader.play();
+        returnToReader();
+    }
     private void showMoreMenu() {
         pausePlaybackOutsideReader();
         // Save as TXT is offered only when what is open is a web page, because a book that came from a file is
         // already a file.
         java.util.List<String> names = new ArrayList<>(); java.util.List<Runnable> actions = new ArrayList<>();
         names.add(getString(R.string.open_url)); actions.add(this::showOpenUrlDialog);
+        names.add(getString(R.string.read_clipboard)); actions.add(this::readClipboard);
         if (loadedText != null && fromWebPage) {
             names.add(getString(R.string.copy_text)); actions.add(this::copyLoadedText);
             names.add(getString(R.string.share_text)); actions.add(this::shareLoadedText);
@@ -854,6 +934,7 @@ public class MainActivity extends Activity implements ReaderService.Listener {
         if (loadedText != null && !fromPlainTextFile) { names.add(getString(R.string.save_as_txt)); actions.add(this::saveAsTxt); }
         names.add(getString(R.string.search)); actions.add(this::showSearchDialog);
         if (!fromWeb) { names.add(getString(R.string.bookmarks)); actions.add(this::showBookmarks); }
+        names.add(getString(R.string.go_to_start)); actions.add(this::goToStart);
         names.add(getString(R.string.settings)); actions.add(this::showSettings);
         names.add(getString(R.string.credits)); actions.add(this::showCredits);
         final boolean[] chosen = {false};
@@ -1011,6 +1092,11 @@ public class MainActivity extends Activity implements ReaderService.Listener {
         try { startActivity(Intent.createChooser(send, getString(R.string.share_text))); }
         catch (Exception e) { leavingForResult = false; toast(getString(R.string.share_failed)); returnToReader(); }
     }
+    private void readClipboard() {
+        String text = clipboardText().trim();
+        if (text.isEmpty()) { toast(getString(R.string.clipboard_empty)); returnToReader(); return; }
+        showSharedText(text, getString(R.string.clipboard_text), "clip:");
+    }
     private String clipboardText() {
         try {
             android.content.ClipboardManager clipboard = (android.content.ClipboardManager)getSystemService(CLIPBOARD_SERVICE);
@@ -1167,6 +1253,18 @@ public class MainActivity extends Activity implements ReaderService.Listener {
         LinearLayout.LayoutParams params = new LinearLayout.LayoutParams(-1, -2);
         params.setMargins(contentInset(), topMargin, contentInset(), 0); return params;
     }
+    private AccessibleSpinner stepSpinner(LinearLayout box, int captionResource, String key, int[] values, int fallback) {
+        String[] labels = new String[values.length];
+        for (int i = 0; i < values.length; i++) labels[i] = String.valueOf(values[i]);
+        AccessibleSpinner spinner = new AccessibleSpinner(this);
+        spinner.setAdapter(themedSpinnerAdapter(labels));
+        labelled(box, captionResource, spinner);
+        int saved = getSettings().getInt(key, fallback), at = 0;
+        for (int i = 0; i < values.length; i++) if (values[i] == saved) at = i;
+        spinner.setSelection(at, false);
+        configureSpinnerAccessibility(spinner, labels);
+        return spinner;
+    }
     private LinearLayout.LayoutParams below(int topMargin) {
         LinearLayout.LayoutParams params = new LinearLayout.LayoutParams(-1, -2); params.setMargins(0, topMargin, 0, 0); return params;
     }
@@ -1218,6 +1316,9 @@ public class MainActivity extends Activity implements ReaderService.Listener {
         sliderValues.put(interfaceFont, labelledWithValue(box, R.string.interface_font_size, interfaceFont)); updateSliderPercentValue(interfaceFont);
         SeekBar font = seek(box, R.string.document_font_size, 14, 32, p.getInt("font_size", 23));
         SeekBar fastSeekInterval = millisecondSeek(box, R.string.fast_seek_interval, FAST_SEEK_MIN_MS, FAST_SEEK_MAX_MS, 50, fastSeekInterval(p));
+        final int[] sentenceSteps = {5, 10, 15, 20}, paragraphSteps = {2, 4, 6};
+        AccessibleSpinner sentenceStep = stepSpinner(box, R.string.sentence_step, "sentence_step", sentenceSteps, 5);
+        AccessibleSpinner paragraphStep = stepSpinner(box, R.string.paragraph_step, "paragraph_step", paragraphSteps, 2);
         CheckBox seekVibration = new CheckBox(this); seekVibration.setText(R.string.seek_vibration); seekVibration.setTextSize(uiSize(labelTextSize())); seekVibration.setChecked(p.getBoolean("seek_vibration", true)); box.addView(seekVibration, field(dp(8)));
         CheckBox pauseForSettings = new CheckBox(this); pauseForSettings.setText(R.string.pause_for_settings); pauseForSettings.setTextSize(uiSize(labelTextSize())); pauseForSettings.setChecked(p.getBoolean("pause_for_settings", true)); box.addView(pauseForSettings, field(dp(8)));
         CheckBox preventDeviceAutoplay = new CheckBox(this); preventDeviceAutoplay.setText(R.string.prevent_device_autoplay); preventDeviceAutoplay.setTextSize(uiSize(labelTextSize())); preventDeviceAutoplay.setChecked(p.getBoolean("prevent_device_autoplay", true)); box.addView(preventDeviceAutoplay, field(dp(8)));
@@ -1235,7 +1336,7 @@ public class MainActivity extends Activity implements ReaderService.Listener {
         });
         Runnable applyOptions = () -> {
             int fontValue = seekValue(font), interfaceValue = 50 + interfaceFont.getProgress() * 5; String selectedTheme = themeValues[themeSpinner.getSelectedItemPosition()], selectedLanguage = languageValues[languageSpinner.getSelectedItemPosition()]; boolean themeChanged = !selectedTheme.equals(p.getString("theme", "system")), languageChanged = !selectedLanguage.equals(p.getString("language", "system"));
-            p.edit().putInt("font_size", fontValue).putInt("interface_scale", interfaceValue).putInt("fast_seek_interval", seekValue(fastSeekInterval)).putString("theme", selectedTheme).putString("language", selectedLanguage).putBoolean("pause_for_settings", pauseForSettings.isChecked()).putBoolean("seek_vibration", seekVibration.isChecked()).putBoolean("web_from_start", webFromStart.isChecked()).putBoolean("close_on_back", closeOnBack.isChecked()).putBoolean("prevent_device_autoplay", preventDeviceAutoplay.isChecked()).putString("keep_screen", KEEP_SCREEN_VALUES[keepScreenSpinner.getSelectedItemPosition()]).apply(); applyScreenSetting(); keepPreview[0] = true; body.setTextSize(fontValue); if (languageChanged) applyLanguage(selectedLanguage); if (themeChanged || languageChanged) { resumeAfterRecreate = pausedAutomaticallyOutsideReader; pausedAutomaticallyOutsideReader = false; subpageCloseAction = null; keepReadingAfterFinish = true; getWindow().getDecorView().post(this::recreate); } else closeRecent();
+            p.edit().putInt("font_size", fontValue).putInt("interface_scale", interfaceValue).putInt("fast_seek_interval", seekValue(fastSeekInterval)).putInt("sentence_step", sentenceSteps[Math.max(0, sentenceStep.getSelectedItemPosition())]).putInt("paragraph_step", paragraphSteps[Math.max(0, paragraphStep.getSelectedItemPosition())]).putString("theme", selectedTheme).putString("language", selectedLanguage).putBoolean("pause_for_settings", pauseForSettings.isChecked()).putBoolean("seek_vibration", seekVibration.isChecked()).putBoolean("web_from_start", webFromStart.isChecked()).putBoolean("close_on_back", closeOnBack.isChecked()).putBoolean("prevent_device_autoplay", preventDeviceAutoplay.isChecked()).putString("keep_screen", KEEP_SCREEN_VALUES[keepScreenSpinner.getSelectedItemPosition()]).apply(); applyScreenSetting(); keepPreview[0] = true; body.setTextSize(fontValue); if (languageChanged) applyLanguage(selectedLanguage); if (themeChanged || languageChanged) { resumeAfterRecreate = pausedAutomaticallyOutsideReader; pausedAutomaticallyOutsideReader = false; subpageCloseAction = null; keepReadingAfterFinish = true; getWindow().getDecorView().post(this::recreate); } else closeRecent();
         };
         Runnable closeOptions = () -> { if (!keepPreview[0]) previewInterfaceScale(previewScale[0], originalInterfaceScale); };
         showSettingsPage(R.string.settings, box, applyOptions, closeOptions);
@@ -1732,7 +1833,7 @@ public class MainActivity extends Activity implements ReaderService.Listener {
                 fileName = inner.name; kind = inner.kind; bytes = inner.bytes;
             }
             boolean plain = "txt".equals(kind) && !wrapped;
-            String loaded = ("txt".equals(kind) ? decode(bytes) : DocumentText.extract(kind, bytes)).replace("\r\n", "\n").replace('\r', '\n');
+            String loaded = ("txt".equals(kind) ? decode(bytes) : DocumentText.extract(kind, bytes, getString(R.string.footnote_prefix))).replace("\r\n", "\n").replace('\r', '\n');
             if (loaded.trim().isEmpty()) return null;
             String savedName = item.optString("name");
             return new RecentDocument(uriValue, savedName.isEmpty() ? withoutExtension(fileName) : savedName, loaded, plain);

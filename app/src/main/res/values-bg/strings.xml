@@ -29,6 +29,9 @@
     <string name="save_failed">Файлът не можа да бъде запазен</string>
     <string name="open_url">Отваряне на URL</string>
     <string name="open_url_action">Отваряне</string>
+    <string name="read_clipboard">Прочитане на клипборда</string>
+    <string name="clipboard_empty">Клипбордът е празен</string>
+    <string name="clipboard_text">Клипборд</string>
     <string name="web_address">Уеб адрес</string>
     <string name="credits">Благодарности</string>
     <string name="credits_text">Vox TXT чете уеб страници и отваря книги във формат EPUB, FB2 и DOCX с помощта на две библиотеки с отворен код.\n\njsoup — HTML парсерът, от Jonathan Hedley, лиценз MIT.\n\nReadability4J — пренос на Mozilla Readability, същата, която стои зад Reader View във Firefox, от Christian Dankl, лиценз Apache 2.0.\n\nБлагодарим.</string>
@@ -38,7 +41,18 @@
     <string name="loading">Зареждане…</string>
     <string name="sentence_count">Изречение %1$d от %2$d</string>
     <string name="sentence_position">Изречение %1$d</string>
+    <string name="paragraph_position">Абзац %1$d</string>
     <string name="go_to_sentence">Отиване на изречение</string>
+    <string name="go_to_paragraph">Отиване на абзац</string>
+    <string name="navigation">Навигация</string>
+    <string name="go_to_sentence_hint">Отиване на изречение, 1-%1$d</string>
+    <string name="go_to_paragraph_hint">Отиване на абзац, 1-%1$d</string>
+    <string name="go_to_start">Отиване в началото</string>
+    <string name="nav_sentences">Изречения</string>
+    <string name="nav_paragraphs">Абзаци</string>
+    <string name="paragraph_count">Абзац %1$d от %2$d</string>
+    <string name="previous_paragraph">Предишен абзац</string>
+    <string name="next_paragraph">Следващ абзац</string>
     <string name="sentence_number">Номер на изречение</string>
     <string name="invalid_sentence">Въведете номер от 1 до %1$d.</string>
     <string name="no_text">Няма текст за четене</string>
@@ -56,7 +70,9 @@
     <string name="pitch">Височина на гласа</string>
     <string name="volume">Сила на звука</string>
     <string name="sentence_pause">Пауза между изреченията</string>
-    <string name="fast_seek_interval">Интервал за бързо превъртане</string>
+    <string name="sentence_step">Интервал за бързо превъртане по изречения</string>
+    <string name="paragraph_step">Интервал за бързо превъртане по абзаци</string>
+    <string name="fast_seek_interval">Скорост за бързо превъртане</string>
     <string name="milliseconds_value">%1$d милисекунди</string>
     <string name="milliseconds_short_value">%1$d ms</string>
     <string name="percentage_value">%1$d%%</string>
@@ -83,6 +99,7 @@
     <string name="book_progress">Напредък във файла</string>
     <string name="pause_for_settings">Спиране на възпроизвеждането извън четеца</string>
     <string name="seek_vibration">Осезаема обратна връзка при бързо превъртане</string>
+    <string name="footnote_prefix">Бележка под линия:</string>
     <string name="unsupported_content">Съдържанието не се поддържа.</string>
     <string name="keep_screen_off">Изключено</string>
     <string name="keep_screen_both">Документи и уеб страници</string>

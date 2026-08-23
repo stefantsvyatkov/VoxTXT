@@ -29,6 +29,9 @@
     <string name="save_failed">The file could not be saved</string>
     <string name="open_url">Open URL</string>
     <string name="open_url_action">Open</string>
+    <string name="read_clipboard">Read the clipboard</string>
+    <string name="clipboard_empty">The clipboard is empty</string>
+    <string name="clipboard_text">Clipboard</string>
     <string name="web_address">Web address</string>
     <string name="credits">Credits</string>
     <string name="credits_text">Vox TXT reads web pages, and opens EPUB, FB2 and DOCX books, with the help of two open source libraries.\n\njsoup — the HTML parser, by Jonathan Hedley, MIT licence.\n\nReadability4J — a port of Mozilla Readability, the same one behind Firefox Reader View, by Christian Dankl, Apache Licence 2.0.\n\nThank you.</string>
@@ -38,7 +41,18 @@
     <string name="loading">Loading…</string>
     <string name="sentence_count">Sentence %1$d of %2$d</string>
     <string name="sentence_position">Sentence %1$d</string>
+    <string name="paragraph_position">Paragraph %1$d</string>
     <string name="go_to_sentence">Go to sentence</string>
+    <string name="go_to_paragraph">Go to paragraph</string>
+    <string name="navigation">Navigation</string>
+    <string name="go_to_sentence_hint">Go to sentence, 1-%1$d</string>
+    <string name="go_to_paragraph_hint">Go to paragraph, 1-%1$d</string>
+    <string name="go_to_start">Go to the beginning</string>
+    <string name="nav_sentences">Sentences</string>
+    <string name="nav_paragraphs">Paragraphs</string>
+    <string name="paragraph_count">Paragraph %1$d of %2$d</string>
+    <string name="previous_paragraph">Previous paragraph</string>
+    <string name="next_paragraph">Next paragraph</string>
     <string name="sentence_number">Sentence number</string>
     <string name="invalid_sentence">Enter a number from 1 to %1$d.</string>
     <string name="no_text">No readable text</string>
@@ -56,7 +70,9 @@
     <string name="pitch">Voice pitch</string>
     <string name="volume">Volume</string>
     <string name="sentence_pause">Pause between sentences</string>
-    <string name="fast_seek_interval">Fast seek interval</string>
+    <string name="fast_seek_interval">Fast seek speed</string>
+    <string name="sentence_step">Fast seek step in sentences</string>
+    <string name="paragraph_step">Fast seek step in paragraphs</string>
     <string name="milliseconds_value">%1$d milliseconds</string>
     <string name="milliseconds_short_value">%1$d ms</string>
     <string name="percentage_value">%1$d%%</string>
@@ -83,6 +99,7 @@
     <string name="book_progress">File progress</string>
     <string name="pause_for_settings">Pause playback outside reader</string>
     <string name="seek_vibration">Fast seek haptic feedback</string>
+    <string name="footnote_prefix">Footnote:</string>
     <string name="unsupported_content">Unsupported content.</string>
     <string name="keep_screen_off">Off</string>
     <string name="keep_screen_both">Documents and web pages</string>
