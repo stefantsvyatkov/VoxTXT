@@ -10,6 +10,10 @@ The user writes and expects replies in Bulgarian.
 unknown character, so it reaches him as noise in the middle of a sentence. This holds everywhere: the app's
 Bulgarian strings, the two documents in `docs/`, and anything written to him in Bulgarian.
 
+**Never answer him with a table.** A grid of columns arrives through a screen reader as a stream of
+disconnected cells and he has to rebuild the shape in his head. Say it as a list, or as several short lists
+under headings of their own - one list per case rather than one table across all the cases.
+
 **He uses Jieshuo, not TalkBack.** TalkBack comes out only for the occasional test, so advice that assumes it,
 or fixes aimed at its particular quirks, are aimed at the wrong reader.
 

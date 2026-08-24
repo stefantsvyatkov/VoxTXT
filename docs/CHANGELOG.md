@@ -1,5 +1,28 @@
 # Vox TXT — changelog
 
+## Changes in Beta 6
+
+### New
+
+1. Navigation by paragraphs. The Go to sentence button is now Navigation, and what it opens chooses what everything moves by - sentences or paragraphs - and takes a number to go to in whichever was chosen. Previous and Next under the player follow that choice and say which they are moving by, and the line above the reading counts in it as well.
+2. Footnotes are read where they are referred to, right after the sentence their little number stood in, announced as "Footnote:". Until now they were thrown away: the texts at the end of an FB2 were skipped and the links in an EPUB removed, so half of what some books have to say never reached the reader. FB2, EPUB and DOCX are all read this way, notes at the end of a Word document included, and a note pointed at from several places is read at every one of them.
+3. Calculate the duration, in More, says how long a document takes to read out with the voice in use. Android will not say how long a sentence takes without producing it, and producing a whole novel takes an hour on a slow voice - so two hundred sentences spread through the document are written out silently and the rest is worked out from them. Measured against a full production of two books it came within a minute, which on seven hours is a fifth of one per cent. The line above the progress bar then says about how much has been read of how much in all, and stays right after seeking. It is kept per document and belongs to the exact voice, rate and pitch it was taken under: change any of them and it steps aside, come back to them and it counts again. It runs with the screen off, says so in the notification shade, can be called off, and every run replaces the one before it.
+4. Read the clipboard, in More, reads whatever has been copied. It is taken as it stands: an address on the clipboard is read out rather than fetched, which is what Open URL one line above is for.
+5. Go to the beginning, in More, returns to the first sentence of whatever is open.
+
+### Changed
+
+1. Options is now called Settings and holds three of its own: General, Reading and Seeking. Each opens a page of its own, and Apply and Back both return to that list rather than out to the book. Language and theme take effect the moment they are chosen.
+2. Open TXT is now Open file, which is what it has been since FB2, EPUB, DOCX and ZIP were added.
+3. Pause playback outside reader is now Pause reading when another screen opens, and Voice settings is now Voice options.
+4. Fast seek interval is now called Fast seek speed, which is what it always was. Beside it are two new settings: how far one step of a fast seek reaches in sentences, and how far in paragraphs. A paragraph is about five sentences, so the two are counted separately.
+5. Go to the beginning moves the reading without deciding whether there should be any: a book that was silent stays silent at its first sentence, and one that was speaking carries on from there. Setting a sleep timer no longer starts a stopped book either - it says when to stop, not when to begin.
+6. Settings can be reached with nothing open, and More offers only what applies. With nothing open it holds the two ways of bringing something in, the settings and the credits, instead of a search with nothing to search.
+
+### Fixed
+
+1. An archive that could not be opened at all reported it in English, in the words of the library that failed rather than the app's own.
+
 ## Changes in Beta 5
 
 ### New

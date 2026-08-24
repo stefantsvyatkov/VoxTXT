@@ -24,6 +24,7 @@ public class ReaderService extends Service implements TextToSpeech.OnInitListene
     private static final String SLEEP_STATE = "sleep_rewind_state";
     private static final String PREVIEW_UTTERANCE = "voice-preview";
     private static final String END_UTTERANCE = "end-of-text";
+    private static final String MEASURE_UTTERANCE = "measure-";
     private static final long PREVIEW_RETRY_MS = 700L;
     private static final String PARAM_VOICE_NAME = "voiceName";
     // Whether a media key means anything to this app. Read by MediaButtonReceiver before it starts anything
@@ -31,7 +32,7 @@ public class ReaderService extends Service implements TextToSpeech.OnInitListene
     // book is gone. Kept in settings rather than in memory, because the receiver runs when nothing else does.
     public static final String ARMED = "player_armed";
 
-    public interface Listener { void onPlaybackState(int index, int count, boolean playing); void onPlaybackError(String message); void onPreviewState(boolean speaking); }
+    public interface Listener { void onPlaybackState(int index, int count, boolean playing); void onPlaybackError(String message); void onPreviewState(boolean speaking); void onDurationProgress(int done, int total, boolean running); }
     public class ReaderBinder extends Binder {
         public ReaderService service() { return ReaderService.this; }
     }
@@ -260,6 +261,7 @@ public class ReaderService extends Service implements TextToSpeech.OnInitListene
         useProfile(fromWeb ? WEB_PROFILE : "");
         if (sleepRewindAvailable && !newUri.equals(getSharedPreferences(SLEEP_STATE, MODE_PRIVATE).getString("uri", ""))) clearSleepRewindState();
         split(); current = Math.min(current, Math.max(0, sentences.size() - 1));
+        loadDurations();
         savePosition(); notifyState();
     }
     public void clearDocument() {
@@ -431,6 +433,275 @@ public class ReaderService extends Service implements TextToSpeech.OnInitListene
         if (wanted >= paragraphStart.size()) { move(sentences.size() - 1 - current); return; }
         move(sentenceOfParagraph(Math.max(0, wanted)) - current);
     }
+
+    // How long the book takes to read out, measured rather than guessed at. The engine is asked to write each
+    // sentence to a file instead of speaking it; what comes back is a WAV, which is raw sound behind a header
+    // of forty-four bytes, so the size of the file is the length of the sentence and nothing has to be opened
+    // or decoded. The file is read for its size and thrown away at once, so what stands on the storage at any
+    // moment is one sentence.
+    //
+    // Nothing is compressed on purpose. A compressed file would need an encoder to make and would no longer
+    // say its own length by its size, which is the whole reason this works without a library.
+    // How long a document takes to read out, with the voice and the settings in use. Android will not say how
+    // long a sentence takes without producing it, and producing a whole novel takes as long as an hour on a
+    // slow voice - so a couple of hundred sentences are produced instead and the rest is worked out from them.
+    // Measured against a full production of two books it came within a minute, which on seven hours is a fifth
+    // of one per cent; the tables other readers use are quoted at about three.
+    //
+    // Producing a sentence means asking the engine to write it to a file rather than speak it. What comes back
+    // is a WAV: raw sound behind a header of forty-four bytes, so the size of the file is the length of the
+    // sentence and nothing has to be opened or decoded. The file is read for its size and thrown away at once.
+    // Nothing is compressed on purpose - a compressed file would need an encoder and would no longer give its
+    // length by its size, which is the whole reason this needs no library.
+    private static final int WAV_HEADER = 44, WAV_RATE = 22050, WAV_BYTES = 2;
+    private static final int TIMING_VERSION = 2;
+    // Two hundred is enough because two numbers are being fitted, not six thousand, and the uncertainty in them
+    // falls with the root of the count: past a couple of hundred the extra minutes buy almost nothing.
+    public static final int SAMPLE_SIZE = 200;
+    // The engine takes a sentence and now and then says nothing back at all - no finish, no error - the same
+    // silence that used to stop the reading dead. Each one is timed, asked for again if nothing comes, and as
+    // patiently as the reading waits when a screen reader has taken the engine.
+    private static final long MEASURE_TIMEOUT_MS = 8000L;
+    private static final int MEASURE_TRIES = 12;
+
+    private int[] sentenceMillis;
+    private boolean durationsReady;
+    private String measuredUnder = "";
+    private boolean measuring;
+    private int[] measureQueue = new int[0];
+    private int measurePosition;
+    private int measureAttempt;
+    private int lastMeasurePercent = -1;
+    private long sentenceAskedAt;
+    private final Handler measureHandler = new Handler(Looper.getMainLooper());
+    // Measuring takes minutes and the phone is meant to be put down while it happens. A dark screen lets the
+    // processor sleep, and a sleeping processor stops the engine mid-book.
+    private android.os.PowerManager.WakeLock measureLock;
+
+    public boolean canMeasure() { return !sentences.isEmpty() && !WEB_PROFILE.equals(profile); }
+    public boolean isMeasuring() { return measuring; }
+    public boolean hasDurations() {
+        return durationsReady && sentenceMillis != null && sentenceMillis.length == sentences.size()
+            && measuredUnder.equals(voiceSignature());
+    }
+    // Everything that changes how long a sentence takes to say. Rate is not a multiplier on time: engines
+    // answer it in their own way and two voices at the same setting do not speak at the same speed, so a
+    // measurement belongs to the exact settings it was taken under. Come back to those and it counts again.
+    private String voiceSignature() {
+        android.content.SharedPreferences p = getSharedPreferences("reader_settings", MODE_PRIVATE);
+        return activeEngine + "|" + p.getString(voicePreferenceKey(profile, activeEngine), "")
+            + "|" + p.getInt(setting("rate_percent"), 20) + "|" + p.getInt(setting("pitch_percent"), 20);
+    }
+
+    // Every run starts from nothing and replaces what was there, whether it ends well or not, so that a run
+    // which fails or is killed cannot leave the previous answer standing as though it were the new one.
+    public void startMeasuring() {
+        if (measuring || !canMeasure() || !ready || tts == null) return;
+        pause();
+        holdProcessorAwake(true);
+        clearMeasureFiles();
+        sentenceMillis = new int[sentences.size()];
+        durationsReady = false;
+        measuredUnder = voiceSignature();
+        deleteFile(durationFile());
+        // Spread evenly through the document rather than taken from its opening, so that dialogue and
+        // description are both in the sample and no single long chapter decides the answer.
+        int wanted = Math.min(SAMPLE_SIZE, sentences.size());
+        measureQueue = new int[wanted];
+        for (int i = 0; i < wanted; i++) measureQueue[i] = (int)((long)i * sentences.size() / wanted);
+        measurePosition = 0;
+        measureAttempt = 0;
+        lastMeasurePercent = -1;
+        measuring = true;
+        showMeasureNotification();
+        askForSentence();
+    }
+    public void stopMeasuring() {
+        if (!measuring) return;
+        measuring = false;
+        measureHandler.removeCallbacksAndMessages(null);
+        if (tts != null) tts.stop();
+        clearMeasureFiles();
+        holdProcessorAwake(false);
+        updateNotification();
+        notifyMeasured();
+    }
+    private void askForSentence() {
+        measureHandler.removeCallbacksAndMessages(null);
+        if (!measuring) return;
+        if (measurePosition >= measureQueue.length) { finishMeasuring(); return; }
+        if (tts == null || !ready) { finishMeasuring(); return; }
+        int next = measureQueue[measurePosition];
+        Range range = sentences.get(next);
+        android.content.SharedPreferences p = getSharedPreferences("reader_settings", MODE_PRIVATE);
+        Bundle parameters = new Bundle();
+        parameters.putFloat(TextToSpeech.Engine.KEY_PARAM_VOLUME, 0f);
+        addVoiceParam(parameters, p.getString(voicePreferenceKey(profile, activeEngine), ""));
+        // A name of its own each time. Writing over a file the engine may not have let go of yet is one way
+        // for a sentence to come back with nothing in it.
+        int result = tts.synthesizeToFile(text.substring(range.start, range.end).trim(), parameters, measureFile(next), MEASURE_UTTERANCE + next);
+        if (result == TextToSpeech.ERROR) { retrySentence(); return; }
+        sentenceAskedAt = SystemClock.elapsedRealtime();
+        measureHandler.postDelayed(this::retrySentence, MEASURE_TIMEOUT_MS);
+    }
+    private void retrySentence() {
+        if (!measuring) return;
+        measureHandler.removeCallbacksAndMessages(null);
+        if (++measureAttempt < MEASURE_TRIES) {
+            measureHandler.postDelayed(this::askForSentence, Math.min(1200 + measureAttempt * 300L, 4000L));
+            return;
+        }
+        // Given up on: it is left out of the fitting rather than counted as no time at all.
+        if (measurePosition < measureQueue.length) sentenceMillis[measureQueue[measurePosition]] = 0;
+        measurePosition++;
+        measureAttempt = 0;
+        reportProgress();
+        askForSentence();
+    }
+    private void measured(String utterance) {
+        if (!measuring || !utterance.startsWith(MEASURE_UTTERANCE)) return;
+        int index;
+        try { index = Integer.parseInt(utterance.substring(MEASURE_UTTERANCE.length())); }
+        catch (NumberFormatException e) { return; }
+        // A late answer to a sentence already given up on, or an answer to one asked twice.
+        if (measurePosition >= measureQueue.length || index != measureQueue[measurePosition]) return;
+        measureHandler.removeCallbacksAndMessages(null);
+        java.io.File file = measureFile(index);
+        long size = file.length();
+        file.delete();
+        long sound = Math.max(0, size - WAV_HEADER);
+        sentenceMillis[index] = (int)(sound * 1000L / (WAV_RATE * WAV_BYTES));
+        measurePosition++;
+        measureAttempt = 0;
+        reportProgress();
+        askForSentence();
+    }
+    // The screen and the shade hear from this only when the whole percentage changes. Telling them on every
+    // sentence buries a screen reader under hundreds of announcements a minute, and it then speaks them in the
+    // order they were made rather than the order they happened - which is how a bar that had just said nine
+    // per cent could be heard saying eight.
+    private void reportProgress() {
+        // Every tenth per cent, on the screen and in the shade alike. Ten steps over the whole measuring is
+        // enough to know it is alive, and few enough that neither the screen reader nor the engine measuring
+        // the book is taken away from its work for it.
+        int percent = measurePosition * 100 / Math.max(1, measureQueue.length) / 10 * 10;
+        if (percent == lastMeasurePercent) return;
+        lastMeasurePercent = percent;
+        showMeasureNotification();
+        notifyMeasured();
+    }
+    private void finishMeasuring() {
+        measuring = false;
+        measureHandler.removeCallbacksAndMessages(null);
+        clearMeasureFiles();
+        fitFromSample();
+        holdProcessorAwake(false);
+        if (durationsReady) { saveDurations(); showFinishedNotification(); } else updateNotification();
+        notifyMeasured();
+    }
+    // The sample gives pairs of letters and milliseconds; the line that fits them best gives two numbers - how
+    // long a letter takes, and what a sentence costs over and above its letters, which is the pause at its end.
+    // Every sentence in the document is then worth those two numbers applied to its own length, so seeking and
+    // the reading position work off it exactly as they would off a full measuring.
+    private void fitFromSample() {
+        long n = 0, sx = 0, sy = 0, sxy = 0, sxx = 0;
+        for (int i = 0; i < measurePosition && i < measureQueue.length; i++) {
+            int index = measureQueue[i];
+            if (sentenceMillis[index] <= 0) continue;
+            long x = sentences.get(index).end - sentences.get(index).start, y = sentenceMillis[index];
+            n++; sx += x; sy += y; sxy += x * y; sxx += x * x;
+        }
+        // Too little came back to say anything. Nothing is left behind, not even what was there before.
+        if (n < 5) { sentenceMillis = null; durationsReady = false; measuredUnder = ""; deleteFile(durationFile()); return; }
+        double perCharacter, perSentence;
+        long denominator = n * sxx - sx * sx;
+        if (denominator == 0) { perCharacter = (double)sy / Math.max(1, sx); perSentence = 0; }
+        else {
+            perCharacter = (double)(n * sxy - sx * sy) / denominator;
+            perSentence = (sy - perCharacter * sx) / n;
+        }
+        // A line sloping the wrong way means the sample was too alike to say anything; the plain average of
+        // time against letters is then the honest answer.
+        if (perCharacter <= 0) { perCharacter = (double)sy / Math.max(1, sx); perSentence = 0; }
+        for (int i = 0; i < sentenceMillis.length; i++) {
+            int letters = sentences.get(i).end - sentences.get(i).start;
+            sentenceMillis[i] = (int)Math.max(0, Math.round(perCharacter * letters + perSentence));
+        }
+        durationsReady = true;
+    }
+    private void notifyMeasured() {
+        if (listener != null) listener.onDurationProgress(measurePosition, Math.max(1, measureQueue.length), measuring);
+    }
+    private void holdProcessorAwake(boolean hold) {
+        try {
+            if (hold) {
+                if (measureLock == null) {
+                    android.os.PowerManager power = (android.os.PowerManager)getSystemService(POWER_SERVICE);
+                    if (power != null) measureLock = power.newWakeLock(android.os.PowerManager.PARTIAL_WAKE_LOCK, "VoxTXT:measure");
+                }
+                if (measureLock != null && !measureLock.isHeld()) measureLock.acquire(60 * 60 * 1000L);
+            } else if (measureLock != null && measureLock.isHeld()) measureLock.release();
+        } catch (Exception ignored) {}
+    }
+    private void showMeasureNotification() {
+        // Started as well as bound, or the service ends the moment the screen that started it goes away - and
+        // the whole point of this is that the phone can be put down while it runs. Declared as the long piece
+        // of work it is, because a service that says it is playing while silent is one Android may shut down.
+        startService(new Intent(this, ReaderService.class));
+        Notification.Builder builder = new Notification.Builder(this, CHANNEL)
+            .setSmallIcon(R.drawable.ic_notification).setContentTitle(getString(R.string.measure_running))
+            .setContentText(title).setOngoing(true).setOnlyAlertOnce(true)
+            .setContentIntent(PendingIntent.getActivity(this, 0, new Intent(this, MainActivity.class), PendingIntent.FLAG_IMMUTABLE))
+            .setProgress(Math.max(1, measureQueue.length), measurePosition, false);
+        if (Build.VERSION.SDK_INT >= 29)
+            startForeground(NOTIFICATION_ID, builder.build(), android.content.pm.ServiceInfo.FOREGROUND_SERVICE_TYPE_DATA_SYNC);
+        else startForeground(NOTIFICATION_ID, builder.build());
+    }
+    private void showFinishedNotification() {
+        NotificationManager manager = getSystemService(NotificationManager.class);
+        if (manager == null) return;
+        manager.notify(NOTIFICATION_ID + 1, new Notification.Builder(this, CHANNEL)
+            .setSmallIcon(R.drawable.ic_notification).setContentTitle(getString(R.string.measure_done_title))
+            .setContentText(title).setAutoCancel(true)
+            .setContentIntent(PendingIntent.getActivity(this, 0, new Intent(this, MainActivity.class), PendingIntent.FLAG_IMMUTABLE))
+            .build());
+        updateNotification();
+    }
+    private java.io.File measureFile(int index) { return new java.io.File(getCacheDir(), "measure-" + (index % 2) + ".wav"); }
+    private void clearMeasureFiles() {
+        for (int i = 0; i < 2; i++) { java.io.File file = new java.io.File(getCacheDir(), "measure-" + i + ".wav"); if (file.exists()) file.delete(); }
+    }
+    // Where the reading stands in time. The gap between sentences is this app's own and is not in what the
+    // engine wrote, so it is counted in here.
+    public long millisBefore(int sentence) {
+        if (!hasDurations()) return -1;
+        int pause = getSharedPreferences("reader_settings", MODE_PRIVATE).getInt(setting("sentence_pause"), 0);
+        long total = 0;
+        for (int i = 0; i < sentence && i < sentenceMillis.length; i++) total += sentenceMillis[i] + pause;
+        return total;
+    }
+    public long millisTotal() { return hasDurations() ? millisBefore(sentenceMillis.length) : -1; }
+    private void saveDurations() {
+        if (sentenceMillis == null || !durationsReady || uri.isEmpty()) return;
+        try (java.io.DataOutputStream out = new java.io.DataOutputStream(openFileOutput(durationFile(), MODE_PRIVATE))) {
+            out.writeInt(TIMING_VERSION); out.writeUTF(measuredUnder); out.writeInt(sentenceMillis.length);
+            for (int value : sentenceMillis) out.writeInt(value);
+        } catch (Exception ignored) {}
+    }
+    private void loadDurations() {
+        sentenceMillis = null; durationsReady = false; measuredUnder = "";
+        if (uri.isEmpty()) return;
+        try (java.io.DataInputStream in = new java.io.DataInputStream(openFileInput(durationFile()))) {
+            if (in.readInt() != TIMING_VERSION) return;
+            String signature = in.readUTF(); int count = in.readInt();
+            if (count != sentences.size()) return;
+            int[] values = new int[count];
+            for (int i = 0; i < count; i++) values[i] = in.readInt();
+            sentenceMillis = values; measuredUnder = signature; durationsReady = true;
+        } catch (Exception ignored) {}
+    }
+    private String durationFile() { return durationFile(uri); }
+    private String durationFile(String value) { return "timing-" + Integer.toHexString(value.hashCode()) + ".bin"; }
     public int paragraphCount() { return paragraphStart.size(); }
     public int paragraphOf(int sentence) {
         int found = java.util.Collections.binarySearch(paragraphStart, sentence);
@@ -731,9 +1002,9 @@ public class ReaderService extends Service implements TextToSpeech.OnInitListene
         tts.setAudioAttributes(new AudioAttributes.Builder().setUsage(AudioAttributes.USAGE_MEDIA).setContentType(AudioAttributes.CONTENT_TYPE_SPEECH).build());
         tts.setOnUtteranceProgressListener(new UtteranceProgressListener() {
             @Override public void onStart(String id) { handler.post(() -> { if (id.equals(activeUtterance)) { utteranceStarted = true; refreshSilentPlaybackPriority(); } }); }
-            @Override public void onDone(String id) { handler.post(() -> { if (isPreview(id)) previewFinished(id); else if (END_UTTERANCE.equals(id)) pause(); else finishCurrentSentence(id); }); }
+            @Override public void onDone(String id) { handler.post(() -> { if (id.startsWith(MEASURE_UTTERANCE)) measured(id); else if (isPreview(id)) previewFinished(id); else if (END_UTTERANCE.equals(id)) pause(); else finishCurrentSentence(id); }); }
             @Override public void onStop(String id, boolean interrupted) { handler.post(() -> { if (isPreview(id)) { previewStopped(id, interrupted); return; } if (END_UTTERANCE.equals(id)) { pause(); return; } if (playing && id.equals(activeUtterance)) waitForEngine(id); }); }
-            @Override public void onError(String id) { handler.post(() -> { if (isPreview(id)) previewFinished(id); else if (END_UTTERANCE.equals(id)) pause(); else if (interruptedRetries > 0) waitForEngine(id); else retryCurrentSentence(id); }); }
+            @Override public void onError(String id) { handler.post(() -> { if (id.startsWith(MEASURE_UTTERANCE)) retrySentence(); else if (isPreview(id)) previewFinished(id); else if (END_UTTERANCE.equals(id)) pause(); else if (interruptedRetries > 0) waitForEngine(id); else retryCurrentSentence(id); }); }
         });
         notifyState(); if (pendingPlay) { pendingPlay = false; play(); }
     }
@@ -748,6 +1019,9 @@ public class ReaderService extends Service implements TextToSpeech.OnInitListene
     public void forgetBook(String value) {
         if (value == null || value.isEmpty()) return;
         getSharedPreferences("book_positions", MODE_PRIVATE).edit().remove(key(value)).apply();
+        // Removing a book is taken at its word: the time it takes to read goes with the place it was left at.
+        deleteFile(durationFile(value));
+        if (value.equals(uri)) { sentenceMillis = null; durationsReady = false; measuredUnder = ""; }
         if (value.equals(getSharedPreferences(SLEEP_STATE, MODE_PRIVATE).getString("uri", ""))) { clearSleepRewindState(); notifyState(); }
     }
     // savePosition() runs once per sentence, so the hash of the (unchanged) document uri is worth keeping.

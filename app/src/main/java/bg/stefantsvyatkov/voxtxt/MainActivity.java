@@ -44,12 +44,14 @@ public class MainActivity extends Activity implements ReaderService.Listener {
     // Off, while a document is being read, while a web page is, or both.
     private static final String[] KEEP_SCREEN_VALUES = {"off", "documents", "web", "both"};
     private static final String STATE_RESUME_AFTER_RECREATE = "resume_after_recreate";
+    private static final String PENDING_CATEGORY = "pending_settings_category";
     private static final String DOCUMENT_PREFS = "reader_documents";
     private static final String[] CYRILLIC_LANGUAGES = {"bg", "ru", "uk", "sr", "mk", "be"};
     private static final String[] CENTRAL_EUROPEAN_LANGUAGES = {"cs", "sk", "pl", "hu", "sl", "hr", "ro", "sq"};
     private static final String READABLE_PUNCTUATION = "!?;:'\"()[]{}<>«»„“”‘’–—-…*/\\%&@#№+=|~^$€£°§";
     private final ExecutorService io = Executors.newSingleThreadExecutor();
-    private TextView appHeading, title, status, body;
+    private TextView appHeading, title, status, body, durationLabel;
+    private boolean resumed;
     private ImageButton voiceButton, previous, play, next, sleepButton;
     private Button sleepRewindButton;
     private SeekBar bookProgress;
@@ -69,7 +71,7 @@ public class MainActivity extends Activity implements ReaderService.Listener {
     private String renderedText;
     private BackgroundColorSpan highlightSpan;
     private android.text.style.ForegroundColorSpan highlightInk;
-    private Runnable subpageCloseAction, previewAction;
+    private Runnable subpageCloseAction, previewAction, subpageBackTarget;
     private String lastSearch = "";
     // Whatever is being read, kept so that Save as TXT has something to write, and two facts about where it
     // came from. They are settled once, at the moment the text is loaded, where the app already knows
@@ -187,6 +189,13 @@ public class MainActivity extends Activity implements ReaderService.Listener {
         if (restoreLastPage()) return;
         String last = documents().getString("last_uri", "");
         if (last.isEmpty()) markReady(); else loadUri(Uri.parse(last), false);
+        // A theme or a language chosen inside the settings rebuilds the screen; the page being looked at is
+        // opened again, so that choosing does not throw the reader out to the book.
+        int pending = getSettings().getInt(PENDING_CATEGORY, -1);
+        if (pending >= 0) {
+            getSettings().edit().remove(PENDING_CATEGORY).apply();
+            getWindow().getDecorView().post(() -> { markReady(); showSettingsCategory(pending); });
+        }
     }
     // A web page shared from a browser, or a text file opened from a file manager. Anything else falls through
     // to the book that was open last.
@@ -258,6 +267,7 @@ public class MainActivity extends Activity implements ReaderService.Listener {
 
         LinearLayout playerPanel = new LinearLayout(this); playerPanel.setOrientation(LinearLayout.VERTICAL); playerPanel.setGravity(Gravity.BOTTOM); playerPanel.setPadding(dp(12), 0, dp(12), 0); playerPanel.setBackgroundColor(appColor(R.color.panel_bg));
         TextView progressValue = addSliderHeader(playerPanel, R.string.book_progress, 17, 0);
+        durationLabel = sliderHeadingName;
         bookProgress = new BookProgressSeekBar(this); thicken(bookProgress);
 
         sliderValues.put(bookProgress, progressValue);
@@ -467,6 +477,7 @@ public class MainActivity extends Activity implements ReaderService.Listener {
             loadUri(uri, true);
         } else if (request == OPEN_TEXT) returnToReader();
     }
+    private static class Unreadable extends IOException { Unreadable(String message) { super(message); } }
     private void loadUri(Uri uri, boolean remember) {
         if (loading) return; loading = true; if (reader != null) reader.pause(); status.setText(R.string.loading); updateControls();
         io.execute(() -> {
@@ -477,11 +488,11 @@ public class MainActivity extends Activity implements ReaderService.Listener {
                 // manager that hands over a nameless stream - the bytes themselves are asked.
                 String kind = DocumentText.kindOf(fileName);
                 if (kind.isEmpty()) kind = DocumentText.kindOfContent(bytes);
-                if (kind.isEmpty()) throw new IOException(getString(R.string.unsupported_content));
+                if (kind.isEmpty()) throw new Unreadable(getString(R.string.unsupported_content));
                 boolean wrapped = "zip".equals(kind);
                 if (wrapped) {
                     DocumentText.Entry inner = DocumentText.singleDocument(bytes);
-                    if (inner == null) throw new IOException(getString(R.string.zip_one_book));
+                    if (inner == null) throw new Unreadable(getString(R.string.zip_one_book));
                     fileName = inner.name; kind = inner.kind; bytes = inner.bytes;
                 }
                 boolean plain = "txt".equals(kind) && !wrapped;
@@ -489,14 +500,14 @@ public class MainActivity extends Activity implements ReaderService.Listener {
                 // three say so themselves, so they are simply read.
                 String loaded = ("txt".equals(kind) ? decode(bytes) : DocumentText.extract(kind, bytes, getString(R.string.footnote_prefix)))
                     .replace("\r\n", "\n").replace('\r', '\n');
-                if (loaded.trim().isEmpty()) throw new IOException(getString(R.string.file_empty));
+                if (loaded.trim().isEmpty()) throw new Unreadable(getString(R.string.file_empty));
                 String name = DocumentText.titleOf(kind, bytes, withoutExtension(fileName)); runOnUiThread(() -> {
                     if (destroyed) return; loadedText = loaded; fromPlainTextFile = plain; fromWeb = false; fromWebPage = false; currentUri = uri.toString(); currentName = name; title.setText(name); title.setVisibility(View.VISIBLE); title.setPadding(0, 0, 0, dp(8)); loading = false;
                     if (remember) documents().edit().putString("last_uri", currentUri).apply();
                     forgetCachedPage();
                     addRecent(DOCUMENTS_LIST, currentUri, currentName); if (reader == null) pendingText = loaded; else finishLoad(loaded);
                 });
-            } catch (Exception e) { runOnUiThread(() -> { markReady(); loading = false; status.setText(R.string.open_failed); toast(e.getMessage()); updateControls(); if (resumeAfterFilePickerLoad) { resumeAfterFilePickerLoad = false; scheduleAutomaticPlayback(); } }); }
+            } catch (Exception e) { runOnUiThread(() -> { markReady(); loading = false; status.setText(R.string.open_failed); toast(e instanceof Unreadable ? e.getMessage() : getString(R.string.unsupported_content)); updateControls(); if (resumeAfterFilePickerLoad) { resumeAfterFilePickerLoad = false; scheduleAutomaticPlayback(); } }); }
         });
     }
     private void finishLoad(String loaded) {
@@ -578,8 +589,8 @@ public class MainActivity extends Activity implements ReaderService.Listener {
     }
     private byte[] readLimited(Uri uri) throws IOException {
         try (InputStream in = getContentResolver().openInputStream(uri); ByteArrayOutputStream out = new ByteArrayOutputStream()) {
-            if (in == null) throw new IOException(getString(R.string.file_unavailable)); byte[] buf = new byte[8192]; int total = 0, n;
-            while ((n = in.read(buf)) != -1) { total += n; if (total > MAX_BYTES) throw new IOException(getString(R.string.file_too_large)); out.write(buf, 0, n); } return out.toByteArray();
+            if (in == null) throw new Unreadable(getString(R.string.file_unavailable)); byte[] buf = new byte[8192]; int total = 0, n;
+            while ((n = in.read(buf)) != -1) { total += n; if (total > MAX_BYTES) throw new Unreadable(getString(R.string.file_too_large)); out.write(buf, 0, n); } return out.toByteArray();
         }
     }
     private String decode(byte[] b) {
@@ -721,6 +732,7 @@ public class MainActivity extends Activity implements ReaderService.Listener {
         else status.setText(getString(R.string.sentence_count, index + 1, count));
         int percent = count <= 1 ? 0 : Math.round(index * 100f / (count - 1));
         updatingBookProgress = true; bookProgress.setProgress(percent); updatingBookProgress = false; updateBookProgressDescription(percent);
+        updateDurationLabel();
         body.post(() -> {
             android.text.Layout l = body.getLayout(); if (l == null) return;
             int line = Math.max(0, l.getLineForOffset(r.start) - LINES_ABOVE_SENTENCE);
@@ -917,24 +929,110 @@ public class MainActivity extends Activity implements ReaderService.Listener {
     private void goToStart() {
         if (reader == null || reader.getCount() == 0) { returnToReader(); return; }
         cancelAutomaticResume(true);
-        reader.seekTo(0); reader.play();
+        boolean wasReading = reader.isPlaying();
+        reader.seekTo(0);
+        if (wasReading) reader.play();
         returnToReader();
+    }
+
+    // Measuring a whole book takes as long as it takes, so it shows how far it has got and can be called off.
+    // What has been measured is kept, so calling it off is a pause rather than a waste.
+    private AlertDialog measureDialog;
+    private ProgressBar measureBar;
+    private void showMeasureDialog() {
+        if (reader == null || !reader.canMeasure()) { returnToReader(); return; }
+        LinearLayout content = new LinearLayout(this); content.setOrientation(LinearLayout.VERTICAL);
+        content.setPadding(dialogPadding(), dp(16), dialogPadding(), dp(16));
+        TextView heading = label(getString(R.string.measure_duration), 24, true);
+        if (Build.VERSION.SDK_INT >= 28) heading.setAccessibilityHeading(true);
+        content.addView(heading);
+        TextView notice = label(getString(R.string.measure_notice), labelTextSize(), false);
+        content.addView(notice, field(dp(16)));
+        // One line, and only how much longer it will take. A count of sentences and a bar moving with them
+        // are a hundred announcements a minute to somebody listening rather than watching, and none of them
+        // says anything the next will not say better. What is left of the waiting is the one thing worth
+        // knowing while it waits: it is what tells somebody with a slow voice to stop now.
+        // The platform's own bar, behaving as the platform makes it behave. What is decided here is only
+        // how often it is told anything - every tenth per cent - and that is decided where the measuring is.
+        measureBar = new ProgressBar(this, null, android.R.attr.progressBarStyleHorizontal);
+        measureBar.setMax(1000);
+        content.addView(measureBar, field(dp(16)));
+        AlertDialog dialog = new AlertDialog.Builder(this).setView(content)
+            .setNegativeButton(R.string.cancel, null).create();
+        measureDialog = dialog;
+        dialog.setOnDismissListener(d -> {
+            measureDialog = null; measureBar = null;
+            if (reader != null) reader.stopMeasuring();
+            returnToReader();
+        });
+        dialog.show();
+        focusHeading(heading);
+        reader.startMeasuring();
+    }
+    @Override public void onDurationProgress(int done, int total, boolean running) {
+        runOnUiThread(() -> {
+            if (measureBar != null && total > 0) measureBar.setProgress((int)(done * 1000L / total));
+            if (!running) {
+                if (measureBar != null) measureBar.setProgress(measureBar.getMax());
+                if (measureDialog != null) { AlertDialog open = measureDialog; measureDialog = null; open.dismiss(); }
+                // Finished while the app was away: the news waits until it is looked at again.
+                if (reader != null && reader.hasDurations()) { if (resumed) tellDurationDone(); else durationDoneWaiting = true; }
+            }
+            updateDurationLabel();
+        });
+    }
+    private boolean durationDoneWaiting;
+    private void tellDurationDone() {
+        durationDoneWaiting = false;
+        if (reader == null || !reader.hasDurations()) return;
+        new AlertDialog.Builder(this).setTitle(R.string.measure_done_title)
+            .setMessage(getString(R.string.measure_done, spokenTime(reader.millisTotal())))
+            .setPositiveButton(R.string.close, null).show();
+    }
+    // Where the reading stands in time, shown above the bar that says where it stands in the text.
+    // The heading over the bar says what the bar is worth. Without a measurement that is how far through the
+    // file the reading has got; with one it is how long has been read and how long is left, which is the same
+    // question answered in the units a listener actually thinks in.
+    private void updateDurationLabel() {
+        if (durationLabel == null) return;
+        long done = reader == null ? -1 : reader.millisBefore(reader.getCurrent());
+        long total = reader == null ? -1 : reader.millisTotal();
+        if (done < 0 || total <= 0 || !reader.hasDurations()) { durationLabel.setText(R.string.book_progress); return; }
+        durationLabel.setText(getString(R.string.time_position, spokenTime(done), spokenTime(total)));
+    }
+    // Hours and minutes in the words the language uses for them, one hour and two hours being different words
+    // in both of the app's languages.
+    private String spokenTime(long millis) {
+        if (millis < 60000) return getString(R.string.under_a_minute);
+        int minutes = (int)(millis / 60000), hours = minutes / 60, rest = minutes % 60;
+        String saidMinutes = getResources().getQuantityString(R.plurals.minutes, rest, rest);
+        if (hours <= 0) return saidMinutes;
+        // Bulgarian puts a word between the hours and the minutes and English does not, so the joining is
+        // left to the language rather than to a space written here.
+        return getString(R.string.hours_and_minutes, getResources().getQuantityString(R.plurals.hours, hours, hours), saidMinutes);
     }
     private void showMoreMenu() {
         pausePlaybackOutsideReader();
-        // Save as TXT is offered only when what is open is a web page, because a book that came from a file is
-        // already a file.
+        // One order, whatever is open; the rows that do not apply are simply left out. First the two ways of
+        // bringing something new in, which are the only rows that work with nothing open at all. Then the ways
+        // of getting somewhere inside what is open. Then what can be done with the text as a whole. Settings
+        // and credits last, where they are on every screen.
         java.util.List<String> names = new ArrayList<>(); java.util.List<Runnable> actions = new ArrayList<>();
+        boolean open = reader != null && reader.getCount() > 0;
         names.add(getString(R.string.open_url)); actions.add(this::showOpenUrlDialog);
         names.add(getString(R.string.read_clipboard)); actions.add(this::readClipboard);
+        // Contents belongs here, offered only for a book that declares one.
+        if (open) { names.add(getString(R.string.search)); actions.add(this::showSearchDialog); }
+        if (open && !fromWeb) { names.add(getString(R.string.bookmarks)); actions.add(this::showBookmarks); }
+        if (open) { names.add(getString(R.string.go_to_start)); actions.add(this::goToStart); }
+        if (open && reader.canMeasure()) { names.add(getString(R.string.measure_duration)); actions.add(this::showMeasureDialog); }
+        // A web page is the only thing light enough to travel through a share; a book goes as a file instead.
         if (loadedText != null && fromWebPage) {
             names.add(getString(R.string.copy_text)); actions.add(this::copyLoadedText);
             names.add(getString(R.string.share_text)); actions.add(this::shareLoadedText);
         }
+        // Anything that is not already a plain text file sitting on the phone can be written out as one.
         if (loadedText != null && !fromPlainTextFile) { names.add(getString(R.string.save_as_txt)); actions.add(this::saveAsTxt); }
-        names.add(getString(R.string.search)); actions.add(this::showSearchDialog);
-        if (!fromWeb) { names.add(getString(R.string.bookmarks)); actions.add(this::showBookmarks); }
-        names.add(getString(R.string.go_to_start)); actions.add(this::goToStart);
         names.add(getString(R.string.settings)); actions.add(this::showSettings);
         names.add(getString(R.string.credits)); actions.add(this::showCredits);
         final boolean[] chosen = {false};
@@ -1116,7 +1214,7 @@ public class MainActivity extends Activity implements ReaderService.Listener {
     }
 
     // The article as a file, in the Downloads folder under a Vox TXT of its own, so it sits with everything
-    // else the phone has downloaded and is opened from Open TXT like any other book.
+    // else the phone has downloaded and is opened from Open file like any other book.
     private void saveAsTxt() {
         if (loadedText == null) { returnToReader(); return; }
         if (Build.VERSION.SDK_INT < 29 && checkSelfPermission(Manifest.permission.WRITE_EXTERNAL_STORAGE) != PackageManager.PERMISSION_GRANTED) {
@@ -1166,7 +1264,8 @@ public class MainActivity extends Activity implements ReaderService.Listener {
     }
     // Left from the days when Share the log lived here: the file picker sets this flag too, and a stale
     // one would make the app shut itself down under a chooser. Cheap, and it guards a path that was hard won.
-    @Override protected void onResume() { super.onResume(); leavingForResult = false; }
+    @Override protected void onResume() { super.onResume(); leavingForResult = false; resumed = true; if (durationDoneWaiting) tellDurationDone(); }
+    @Override protected void onPause() { super.onPause(); resumed = false; }
 
     // Characters a file name cannot hold, and a length a file name should not have.
     private String safeFileName(String name) {
@@ -1306,45 +1405,157 @@ public class MainActivity extends Activity implements ReaderService.Listener {
         saveBookmarks(fresh);
     }
 
+    // Settings is a list of three, and each of them a page of its own. Thirteen settings on one roll asked
+    // the reader to walk past everything to reach anything; grouped, each page is short enough to hear out.
+    private static final int GENERAL = 0, READING = 1, SEEKING = 2;
     private void showSettings() {
+        pausePlaybackOutsideReader();
+        LinearLayout box = listPage();
+        int[] captions = {R.string.settings_general, R.string.settings_reading, R.string.settings_seeking};
+        java.util.List<View> rows = new ArrayList<>();
+        for (int i = 0; i < captions.length; i++) {
+            final int which = i;
+            Button row = listRowButton(getString(captions[i]), labelTextSize());
+            row.setOnClickListener(v -> showSettingsCategory(which));
+            rows.add(row); box.addView(row, below(dp(16)));
+        }
+        showListPage(R.string.settings, box);
+    }
+    private void showSettingsCategory(int which) {
         android.content.SharedPreferences p = getSettings();
         pausePlaybackOutsideReader(); sliderValues.clear();
         LinearLayout box = new LinearLayout(this); box.setOrientation(LinearLayout.VERTICAL);
-        AccessibleSpinner languageSpinner = new AccessibleSpinner(this); labelled(box, R.string.language, languageSpinner); String[] languageValues = {"system", "en", "bg"}; String[] languageLabels = {getString(R.string.language_system), getString(R.string.language_english), getString(R.string.language_bulgarian)}; languageSpinner.setAdapter(themedSpinnerAdapter(languageLabels)); int languagePosition = Arrays.asList(languageValues).indexOf(p.getString("language", "system")); languageSpinner.setSelection(Math.max(0, languagePosition), false); configureSpinnerAccessibility(languageSpinner, languageLabels);
-        AccessibleSpinner themeSpinner = new AccessibleSpinner(this); labelled(box, R.string.theme, themeSpinner); String[] themeValues = {"system", "light", "dark"}; String[] themeLabels = {getString(R.string.theme_system), getString(R.string.theme_light), getString(R.string.theme_dark)}; themeSpinner.setAdapter(themedSpinnerAdapter(themeLabels)); int themePosition = Arrays.asList(themeValues).indexOf(p.getString("theme", "system")); themeSpinner.setSelection(Math.max(0, themePosition), false); configureSpinnerAccessibility(themeSpinner, themeLabels);
-        SeekBar interfaceFont = new SeekBar(this); thicken(interfaceFont); interfaceFont.setMax(20); int originalInterfaceScale = p.getInt("interface_scale", 100); interfaceFont.setProgress(Math.max(0, Math.min(20, (originalInterfaceScale - 50) / 5)));
-        sliderValues.put(interfaceFont, labelledWithValue(box, R.string.interface_font_size, interfaceFont)); updateSliderPercentValue(interfaceFont);
-        SeekBar font = seek(box, R.string.document_font_size, 14, 32, p.getInt("font_size", 23));
-        SeekBar fastSeekInterval = millisecondSeek(box, R.string.fast_seek_interval, FAST_SEEK_MIN_MS, FAST_SEEK_MAX_MS, 50, fastSeekInterval(p));
-        final int[] sentenceSteps = {5, 10, 15, 20}, paragraphSteps = {2, 4, 6};
-        AccessibleSpinner sentenceStep = stepSpinner(box, R.string.sentence_step, "sentence_step", sentenceSteps, 5);
-        AccessibleSpinner paragraphStep = stepSpinner(box, R.string.paragraph_step, "paragraph_step", paragraphSteps, 2);
-        CheckBox seekVibration = new CheckBox(this); seekVibration.setText(R.string.seek_vibration); seekVibration.setTextSize(uiSize(labelTextSize())); seekVibration.setChecked(p.getBoolean("seek_vibration", true)); box.addView(seekVibration, field(dp(8)));
-        CheckBox pauseForSettings = new CheckBox(this); pauseForSettings.setText(R.string.pause_for_settings); pauseForSettings.setTextSize(uiSize(labelTextSize())); pauseForSettings.setChecked(p.getBoolean("pause_for_settings", true)); box.addView(pauseForSettings, field(dp(8)));
-        CheckBox preventDeviceAutoplay = new CheckBox(this); preventDeviceAutoplay.setText(R.string.prevent_device_autoplay); preventDeviceAutoplay.setTextSize(uiSize(labelTextSize())); preventDeviceAutoplay.setChecked(p.getBoolean("prevent_device_autoplay", true)); box.addView(preventDeviceAutoplay, field(dp(8)));
-        AccessibleSpinner keepScreenSpinner = new AccessibleSpinner(this); labelled(box, R.string.keep_screen_on, keepScreenSpinner);
-        String[] keepScreenNames = {getString(R.string.keep_screen_off), getString(R.string.documents_section), getString(R.string.pages_section), getString(R.string.keep_screen_both)};
-        keepScreenSpinner.setAdapter(themedSpinnerAdapter(keepScreenNames));
-        int keepScreenSaved = Math.max(0, Math.min(KEEP_SCREEN_VALUES.length - 1, indexOf(KEEP_SCREEN_VALUES, p.getString("keep_screen", "off"))));
-        keepScreenSpinner.setSelection(keepScreenSaved, false); configureSpinnerAccessibility(keepScreenSpinner, keepScreenNames);
-        CheckBox webFromStart = new CheckBox(this); webFromStart.setText(R.string.web_from_start); webFromStart.setTextSize(uiSize(labelTextSize())); webFromStart.setChecked(p.getBoolean("web_from_start", true)); box.addView(webFromStart, field(dp(8)));
-        CheckBox closeOnBack = new CheckBox(this); closeOnBack.setText(R.string.close_on_back); closeOnBack.setTextSize(uiSize(labelTextSize())); closeOnBack.setChecked(p.getBoolean("close_on_back", false)); box.addView(closeOnBack, field(dp(8)));
-        final int[] previewScale = {originalInterfaceScale}; final boolean[] keepPreview = {false};
-        interfaceFont.setOnSeekBarChangeListener(new SeekBar.OnSeekBarChangeListener() {
-            public void onStartTrackingTouch(SeekBar seekBar) {} public void onStopTrackingTouch(SeekBar seekBar) {}
-            public void onProgressChanged(SeekBar seekBar, int progress, boolean fromUser) { int value = 50 + progress * 5; updateSliderPercentValue(seekBar); if (value != previewScale[0]) { previewInterfaceScale(previewScale[0], value); previewScale[0] = value; } }
-        });
-        Runnable applyOptions = () -> {
-            int fontValue = seekValue(font), interfaceValue = 50 + interfaceFont.getProgress() * 5; String selectedTheme = themeValues[themeSpinner.getSelectedItemPosition()], selectedLanguage = languageValues[languageSpinner.getSelectedItemPosition()]; boolean themeChanged = !selectedTheme.equals(p.getString("theme", "system")), languageChanged = !selectedLanguage.equals(p.getString("language", "system"));
-            p.edit().putInt("font_size", fontValue).putInt("interface_scale", interfaceValue).putInt("fast_seek_interval", seekValue(fastSeekInterval)).putInt("sentence_step", sentenceSteps[Math.max(0, sentenceStep.getSelectedItemPosition())]).putInt("paragraph_step", paragraphSteps[Math.max(0, paragraphStep.getSelectedItemPosition())]).putString("theme", selectedTheme).putString("language", selectedLanguage).putBoolean("pause_for_settings", pauseForSettings.isChecked()).putBoolean("seek_vibration", seekVibration.isChecked()).putBoolean("web_from_start", webFromStart.isChecked()).putBoolean("close_on_back", closeOnBack.isChecked()).putBoolean("prevent_device_autoplay", preventDeviceAutoplay.isChecked()).putString("keep_screen", KEEP_SCREEN_VALUES[keepScreenSpinner.getSelectedItemPosition()]).apply(); applyScreenSetting(); keepPreview[0] = true; body.setTextSize(fontValue); if (languageChanged) applyLanguage(selectedLanguage); if (themeChanged || languageChanged) { resumeAfterRecreate = pausedAutomaticallyOutsideReader; pausedAutomaticallyOutsideReader = false; subpageCloseAction = null; keepReadingAfterFinish = true; getWindow().getDecorView().post(this::recreate); } else closeRecent();
-        };
-        Runnable closeOptions = () -> { if (!keepPreview[0]) previewInterfaceScale(previewScale[0], originalInterfaceScale); };
-        showSettingsPage(R.string.settings, box, applyOptions, closeOptions);
+        final int[] previewScale = {p.getInt("interface_scale", 100)};
+        final boolean[] keepPreview = {false};
+        final Runnable[] save = {null};
+        int heading;
+        if (which == GENERAL) {
+            heading = R.string.settings_general;
+            AccessibleSpinner languageSpinner = new AccessibleSpinner(this); labelled(box, R.string.language, languageSpinner);
+            String[] languageValues = {"system", "en", "bg"};
+            String[] languageLabels = {getString(R.string.language_system), getString(R.string.language_english), getString(R.string.language_bulgarian)};
+            languageSpinner.setAdapter(themedSpinnerAdapter(languageLabels));
+            languageSpinner.setSelection(Math.max(0, Arrays.asList(languageValues).indexOf(p.getString("language", "system"))), false);
+            AccessibleSpinner themeSpinner = new AccessibleSpinner(this); labelled(box, R.string.theme, themeSpinner);
+            String[] themeValues = {"system", "light", "dark"};
+            String[] themeLabels = {getString(R.string.theme_system), getString(R.string.theme_light), getString(R.string.theme_dark)};
+            themeSpinner.setAdapter(themedSpinnerAdapter(themeLabels));
+            themeSpinner.setSelection(Math.max(0, Arrays.asList(themeValues).indexOf(p.getString("theme", "system"))), false);
+            // Language and theme take effect the moment they are chosen, the way the text sizes do. Both are
+            // carried by the window itself, so the screen is built again - and this page is opened again with
+            // it, at the same category, so that choosing does not throw the reader out of the settings.
+            configureSpinnerAccessibility(languageSpinner, languageLabels, position -> {
+                String wanted = languageValues[position], had = p.getString("language", "system");
+                if (wanted.equals(had)) return;
+                p.edit().putString("language", wanted).apply();
+                if (effectiveLanguage(wanted).equals(effectiveLanguage(had))) return;
+                rebuildForSettingsChange(which, false); applyLanguage(wanted);
+            });
+            configureSpinnerAccessibility(themeSpinner, themeLabels, position -> {
+                String wanted = themeValues[position], had = p.getString("theme", "system");
+                if (wanted.equals(had)) return;
+                p.edit().putString("theme", wanted).apply();
+                if (effectiveTheme(wanted).equals(effectiveTheme(had))) return;
+                rebuildForSettingsChange(which, true);
+            });
+            SeekBar interfaceFont = new SeekBar(this); thicken(interfaceFont); interfaceFont.setMax(20);
+            interfaceFont.setProgress(Math.max(0, Math.min(20, (previewScale[0] - 50) / 5)));
+            sliderValues.put(interfaceFont, labelledWithValue(box, R.string.interface_font_size, interfaceFont));
+            updateSliderPercentValue(interfaceFont);
+            interfaceFont.setOnSeekBarChangeListener(new SeekBar.OnSeekBarChangeListener() {
+                public void onStartTrackingTouch(SeekBar bar) {} public void onStopTrackingTouch(SeekBar bar) {}
+                public void onProgressChanged(SeekBar bar, int progress, boolean fromUser) {
+                    int value = 50 + progress * 5; updateSliderPercentValue(bar);
+                    if (value != previewScale[0]) { previewInterfaceScale(previewScale[0], value); previewScale[0] = value; }
+                }
+            });
+            SeekBar font = seek(box, R.string.document_font_size, 14, 32, p.getInt("font_size", 23));
+            CheckBox closeOnBack = new CheckBox(this); closeOnBack.setText(R.string.close_on_back);
+            closeOnBack.setTextSize(uiSize(labelTextSize())); closeOnBack.setChecked(p.getBoolean("close_on_back", false));
+            box.addView(closeOnBack, field(dp(8)));
+            save[0] = () -> {
+                int fontValue = seekValue(font), interfaceValue = 50 + interfaceFont.getProgress() * 5;
+                p.edit().putInt("font_size", fontValue).putInt("interface_scale", interfaceValue)
+                    .putBoolean("close_on_back", closeOnBack.isChecked()).apply();
+                keepPreview[0] = true; body.setTextSize(fontValue);
+            };
+        } else if (which == READING) {
+            heading = R.string.settings_reading;
+            AccessibleSpinner keepScreenSpinner = new AccessibleSpinner(this); labelled(box, R.string.keep_screen_on, keepScreenSpinner);
+            String[] keepScreenNames = {getString(R.string.keep_screen_off), getString(R.string.documents_section), getString(R.string.pages_section), getString(R.string.keep_screen_both)};
+            keepScreenSpinner.setAdapter(themedSpinnerAdapter(keepScreenNames));
+            keepScreenSpinner.setSelection(Math.max(0, Math.min(KEEP_SCREEN_VALUES.length - 1, indexOf(KEEP_SCREEN_VALUES, p.getString("keep_screen", "off")))), false);
+            configureSpinnerAccessibility(keepScreenSpinner, keepScreenNames);
+            CheckBox pauseForSettings = new CheckBox(this); pauseForSettings.setText(R.string.pause_for_settings);
+            pauseForSettings.setTextSize(uiSize(labelTextSize())); pauseForSettings.setChecked(p.getBoolean("pause_for_settings", true));
+            box.addView(pauseForSettings, field(dp(8)));
+            CheckBox preventDeviceAutoplay = new CheckBox(this); preventDeviceAutoplay.setText(R.string.prevent_device_autoplay);
+            preventDeviceAutoplay.setTextSize(uiSize(labelTextSize())); preventDeviceAutoplay.setChecked(p.getBoolean("prevent_device_autoplay", true));
+            box.addView(preventDeviceAutoplay, field(dp(8)));
+            CheckBox webFromStart = new CheckBox(this); webFromStart.setText(R.string.web_from_start);
+            webFromStart.setTextSize(uiSize(labelTextSize())); webFromStart.setChecked(p.getBoolean("web_from_start", true));
+            box.addView(webFromStart, field(dp(8)));
+            save[0] = () -> {
+                p.edit().putString("keep_screen", KEEP_SCREEN_VALUES[keepScreenSpinner.getSelectedItemPosition()])
+                    .putBoolean("pause_for_settings", pauseForSettings.isChecked())
+                    .putBoolean("prevent_device_autoplay", preventDeviceAutoplay.isChecked())
+                    .putBoolean("web_from_start", webFromStart.isChecked()).apply();
+                applyScreenSetting();
+            };
+        } else {
+            heading = R.string.settings_seeking;
+            SeekBar fastSeekInterval = millisecondSeek(box, R.string.fast_seek_interval, FAST_SEEK_MIN_MS, FAST_SEEK_MAX_MS, 50, fastSeekInterval(p));
+            final int[] sentenceSteps = {5, 10, 15, 20}, paragraphSteps = {2, 4, 6};
+            AccessibleSpinner sentenceStep = stepSpinner(box, R.string.sentence_step, "sentence_step", sentenceSteps, 5);
+            AccessibleSpinner paragraphStep = stepSpinner(box, R.string.paragraph_step, "paragraph_step", paragraphSteps, 2);
+            CheckBox seekVibration = new CheckBox(this); seekVibration.setText(R.string.seek_vibration);
+            seekVibration.setTextSize(uiSize(labelTextSize())); seekVibration.setChecked(p.getBoolean("seek_vibration", true));
+            box.addView(seekVibration, field(dp(8)));
+            save[0] = () -> p.edit().putInt("fast_seek_interval", seekValue(fastSeekInterval))
+                .putInt("sentence_step", sentenceSteps[Math.max(0, sentenceStep.getSelectedItemPosition())])
+                .putInt("paragraph_step", paragraphSteps[Math.max(0, paragraphStep.getSelectedItemPosition())])
+                .putBoolean("seek_vibration", seekVibration.isChecked()).apply();
+        }
+        // Apply and Back both lead back to the list of categories rather than out to the reading: settings are
+        // usually changed several at a time, and being thrown to the book after each one is a walk back.
+        subpageBackTarget = this::showSettings;
+        Runnable apply = () -> { save[0].run(); subpageBackTarget = null; showSettings(); };
+        Runnable close = () -> { if (!keepPreview[0]) previewInterfaceScale(previewScale[0], p.getInt("interface_scale", 100)); };
+        showSettingsPage(heading, box, apply, close);
     }
-
-    // Two tabs under the heading. The app builds its screens in code and has no tab widget to borrow, so this
-    // is the whole of it: a row of two buttons where the open one is marked as selected. A screen reader says
-    // "selected" for it on its own, which is why the state is carried by setSelected and not by a tick drawn
+    // The window carries the theme and the language, so both are changed by building the screen again. The
+    // category being looked at is remembered across it and opened again once the new screen is up.
+    // What a choice actually comes to. Somebody whose phone is dark already, choosing "system default", has
+    // chosen the same dark - and rebuilding the screen to show them the same thing is a flash for nothing.
+    private String effectiveTheme(String value) {
+        if (!"system".equals(value)) return value;
+        int night = getResources().getConfiguration().uiMode & android.content.res.Configuration.UI_MODE_NIGHT_MASK;
+        return night == android.content.res.Configuration.UI_MODE_NIGHT_YES ? "dark" : "light";
+    }
+    private String effectiveLanguage(String value) {
+        if (!"system".equals(value)) return value;
+        if (Build.VERSION.SDK_INT >= 33) {
+            android.app.LocaleManager manager = getSystemService(android.app.LocaleManager.class);
+            if (manager != null) {
+                android.os.LocaleList system = manager.getSystemLocales();
+                if (system != null && !system.isEmpty()) return system.get(0).getLanguage();
+            }
+        }
+        return android.content.res.Resources.getSystem().getConfiguration().getLocales().get(0).getLanguage();
+    }
+    private void rebuildForSettingsChange(int category, boolean rebuildHere) {
+        resumeAfterRecreate = pausedAutomaticallyOutsideReader;
+        pausedAutomaticallyOutsideReader = false;
+        subpageCloseAction = null; subpageBackTarget = null;
+        keepReadingAfterFinish = true;
+        // Kept in the settings rather than in the bundle the screen hands on. A language change is carried out
+        // by Android itself, which restarts the screen in its own time and by its own route - and a screen
+        // restarted that way never sees the bundle, which is why choosing a language landed on the book.
+        getSettings().edit().putInt(PENDING_CATEGORY, category).apply();
+        // Long enough for the screen reader to finish saying which theme was chosen. Rebuilt on the spot, the
+        // screen took the words out of its mouth and started again with the name of the window.
+        if (rebuildHere) getWindow().getDecorView().postDelayed(this::recreate, 900);
+    }
     // into the caption.
     private LinearLayout tabRow(int[] captions, int active, java.util.function.IntConsumer onPick) {
         LinearLayout row = new LinearLayout(this); row.setPadding(dp(4), 0, dp(4), 0);
@@ -1509,7 +1720,6 @@ public class MainActivity extends Activity implements ReaderService.Listener {
         p.edit().putInt("custom_sleep_minutes", customMinutes).putInt("sleep_choice", choice).apply();
         int chosen = choice == -1 ? customMinutes : choice;
         applied[0] = true; reader.setSleepMinutes(chosen); updateSleepRow();
-        if (chosen > 0 && !reader.isPlaying()) { pausedAutomaticallyOutsideReader = false; scheduleAutomaticPlayback(); }
     }
     private SeekBar seek(LinearLayout box, int label, int min, int max, int value) {
         SeekBar s = new SeekBar(this); thicken(s); s.setTag(new SeekRange(min, max)); s.setMax(20); s.setProgress(Math.round((value - min) * 20f / (max - min)));
@@ -1548,7 +1758,8 @@ public class MainActivity extends Activity implements ReaderService.Listener {
     // The one heading not built by labelled(): the player panel is not a page of settings and its bar is
     // added separately, under a heading with no space above it. It is moved in by the same amount as the
     // others, so that File progress and its bar begin on the same line as everything else does.
-    private TextView addSliderHeader(LinearLayout box, int labelResource, float textSize, int topPadding) { LinearLayout row = new LinearLayout(this); row.setGravity(Gravity.CENTER_VERTICAL); TextView name = label(getString(labelResource), textSize, true); TextView value = valueLabel(); row.addView(name, new LinearLayout.LayoutParams(0, -2, 1)); row.addView(value, new LinearLayout.LayoutParams(-2, -2)); box.addView(row, field(topPadding)); return value; }
+    private TextView sliderHeadingName;
+    private TextView addSliderHeader(LinearLayout box, int labelResource, float textSize, int topPadding) { LinearLayout row = new LinearLayout(this); row.setGravity(Gravity.CENTER_VERTICAL); TextView name = label(getString(labelResource), textSize, true); sliderHeadingName = name; TextView value = valueLabel(); row.addView(name, new LinearLayout.LayoutParams(0, -2, 1)); row.addView(value, new LinearLayout.LayoutParams(-2, -2)); box.addView(row, field(topPadding)); return value; }
     private TextView valueLabel() { TextView value = label("", labelTextSize(), true); value.setGravity(Gravity.END); value.setFocusable(false); value.setImportantForAccessibility(View.IMPORTANT_FOR_ACCESSIBILITY_NO); return value; }
     private void updatePercentValue(SeekBar seek, int percent) { TextView value = sliderValues.get(seek); if (value != null) value.setText(getString(R.string.percentage_value, percent)); setSliderValueDescription(seek, getString(R.string.percentage_spoken, percent)); }
     private void updateMillisecondsValue(SeekBar seek) { int milliseconds = seekValue(seek); TextView value = sliderValues.get(seek); if (value != null) value.setText(getString(R.string.milliseconds_short_value, milliseconds)); setSliderValueDescription(seek, getString(R.string.milliseconds_value, milliseconds)); }
@@ -1779,6 +1990,8 @@ public class MainActivity extends Activity implements ReaderService.Listener {
     private void closeRecent() {
         if (!showingRecent || loading) return;
         Runnable action = subpageCloseAction; subpageCloseAction = null; if (action != null) action.run();
+        Runnable back = subpageBackTarget; subpageBackTarget = null;
+        if (back != null) { back.run(); return; }
         // Returning from a settings page leaves open whatever was open, without reading and decoding the
         // whole file from storage again. There is no need to ask whether it is still in a list: removing a
         // book from the list already closes it if it is the one being read. Asking was what threw away a

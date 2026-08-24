@@ -1,9 +1,9 @@
 <?xml version="1.0" encoding="utf-8"?>
 <resources>
     <string name="app_name">Vox TXT</string>
-    <string name="open_txt">Open TXT</string>
+    <string name="open_txt">Open file</string>
     <string name="recent">Recent files</string>
-    <string name="settings">Options</string>
+    <string name="settings">Settings</string>
     <string name="more">More</string>
     <string name="bookmarks">Bookmarks</string>
     <string name="search">Search</string>
@@ -48,12 +48,19 @@
     <string name="go_to_sentence_hint">Go to sentence, 1-%1$d</string>
     <string name="go_to_paragraph_hint">Go to paragraph, 1-%1$d</string>
     <string name="go_to_start">Go to the beginning</string>
+    <string name="measure_duration">Calculate the duration</string>
+    <string name="measure_notice">Vox TXT is calculating the approximate reading time for this document using the current voice and its settings. This may take a while.</string>
+    <string name="measure_running">Calculating reading time</string>
+    <string name="under_a_minute">less than a minute</string>
+    <string name="measure_done_title">Reading time calculated</string>
+    <string name="measure_done">Reading time: %1$s.</string>
+    <string name="time_position">About %1$s of %2$s</string>
+    <string name="hours_and_minutes">%1$s %2$s</string>
     <string name="nav_sentences">Sentences</string>
     <string name="nav_paragraphs">Paragraphs</string>
     <string name="paragraph_count">Paragraph %1$d of %2$d</string>
     <string name="previous_paragraph">Previous paragraph</string>
     <string name="next_paragraph">Next paragraph</string>
-    <string name="sentence_number">Sentence number</string>
     <string name="invalid_sentence">Enter a number from 1 to %1$d.</string>
     <string name="no_text">No readable text</string>
     <string name="end_of_text">End of text.</string>
@@ -88,7 +95,7 @@
     <string name="theme_light">Light</string>
     <string name="theme_dark">Dark</string>
     <string name="choose_voice">Voice settings</string>
-    <string name="voice_settings">Voice settings</string>
+    <string name="voice_settings">Voice options</string>
     <string name="speech_engine">Speech engine</string>
     <string name="voice">Voice</string>
     <string name="numbered_voice">Voice %1$d</string>
@@ -97,7 +104,10 @@
     <string name="voice_preview_sample">This is how the selected voice sounds.</string>
     <string name="percentage_spoken">%1$d percent</string>
     <string name="book_progress">File progress</string>
-    <string name="pause_for_settings">Pause playback outside reader</string>
+    <string name="pause_for_settings">Pause reading when another screen opens</string>
+    <string name="settings_general">General</string>
+    <string name="settings_reading">Reading</string>
+    <string name="settings_seeking">Seeking</string>
     <string name="seek_vibration">Fast seek haptic feedback</string>
     <string name="footnote_prefix">Footnote:</string>
     <string name="unsupported_content">Unsupported content.</string>
@@ -112,6 +122,7 @@
     <plurals name="rewind_sleep_minutes"><item quantity="one">Return by %1$d minute</item><item quantity="other">Return by %1$d minutes</item></plurals>
     <plurals name="cancel_sleep_timer"><item quantity="one">Cancel the timer, %1$d minute left</item><item quantity="other">Cancel the timer, %1$d minutes left</item></plurals>
     <string name="custom_timer">Custom</string>
+    <plurals name="hours"><item quantity="one">%1$d hour</item><item quantity="other">%1$d hours</item></plurals>
     <plurals name="minutes"><item quantity="one">%1$d minute</item><item quantity="other">%1$d minutes</item></plurals>
     <string name="apply">Apply</string>
     <string name="cancel">Cancel</string>
