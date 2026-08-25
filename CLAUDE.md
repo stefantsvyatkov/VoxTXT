@@ -198,6 +198,9 @@ for anyone who had the earlier build. It now stores under `keep_screen`, and `Ma
 cleanup of that key and of `player_armed`, to be deleted in Beta 6 - a cleanup has to ship in the release
 that meets the phones carrying the old key, and only then can it go.
 
+`nav_unit_plain` holds the last unit chosen that every document can offer, so a book read by paragraphs is
+still read by paragraphs after a book read by sections. `nav_unit` alone could not say it.
+
 A settings file never tidies itself, and `reader_settings` is included in the Android backup, so an orphan key
 travels to every future phone. `reader_documents`, `book_positions` and `sleep_rewind_state` are excluded from
 the backup on purpose: the permissions to open those files are not restored, so a restored list opens nothing.

@@ -42,8 +42,6 @@
     <string name="sentence_count">Sentence %1$d of %2$d</string>
     <string name="sentence_position">Sentence %1$d</string>
     <string name="paragraph_position">Paragraph %1$d</string>
-    <string name="go_to_sentence">Go to sentence</string>
-    <string name="go_to_paragraph">Go to paragraph</string>
     <string name="navigation">Navigation</string>
     <string name="go_to_sentence_hint">Go to sentence, 1-%1$d</string>
     <string name="go_to_paragraph_hint">Go to paragraph, 1-%1$d</string>

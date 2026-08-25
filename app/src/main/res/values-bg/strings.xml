@@ -42,8 +42,6 @@
     <string name="sentence_count">Изречение %1$d от %2$d</string>
     <string name="sentence_position">Изречение %1$d</string>
     <string name="paragraph_position">Абзац %1$d</string>
-    <string name="go_to_sentence">Отиване на изречение</string>
-    <string name="go_to_paragraph">Отиване на абзац</string>
     <string name="navigation">Навигация</string>
     <string name="go_to_sentence_hint">Отиване на изречение, 1-%1$d</string>
     <string name="go_to_paragraph_hint">Отиване на абзац, 1-%1$d</string>

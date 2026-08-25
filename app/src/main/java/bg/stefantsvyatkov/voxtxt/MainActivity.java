@@ -474,7 +474,11 @@ public class MainActivity extends Activity implements ReaderService.Listener {
     // document has none of.
     private String navUnit() {
         String unit = getSettings().getString("nav_unit", "sentence");
-        if ("section".equals(unit) && (reader == null || !reader.hasSections())) return "sentence";
+        // Sections are on offer only while something that declares them is open. What a document without them
+        // falls back to is the last unit chosen that any document can offer - so a book read by paragraphs,
+        // left for one read by sections and come back to, is still read by paragraphs.
+        if ("section".equals(unit) && (reader == null || !reader.hasSections()))
+            return getSettings().getString("nav_unit_plain", "sentence");
         return unit;
     }
     private boolean byParagraph() { return "paragraph".equals(navUnit()); }
@@ -1119,7 +1123,9 @@ public class MainActivity extends Activity implements ReaderService.Listener {
         // The unit is kept the moment Apply is pressed, whether or not a number was typed: choosing what to
         // move by is a decision of its own, and most of the time it is the only one being made here.
         dialog.getButton(AlertDialog.BUTTON_POSITIVE).setOnClickListener(v -> {
-            getSettings().edit().putString("nav_unit", unit[0]).apply();
+            android.content.SharedPreferences.Editor chosen = getSettings().edit().putString("nav_unit", unit[0]);
+            if (!"section".equals(unit[0])) chosen.putString("nav_unit_plain", unit[0]);
+            chosen.apply();
             updateNavLabels();
             int total = "section".equals(unit[0]) ? reader.sectionCount()
                 : "paragraph".equals(unit[0]) ? reader.paragraphCount() : reader.getCount();
