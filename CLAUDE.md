@@ -63,6 +63,13 @@ for legacy .doc (about 5 MB plus an XML-parser workaround), PdfBox-Android for P
 
 ## The visual system
 
+**A colour is written in colors.xml and nowhere else.** The app has a theme setting of its own, and Android
+resolves resources by the phone's setting rather than by ours, so the colours were once kept a second time
+as literal numbers in `appColor`. A colour changed in one place then reached only the users whose theme was
+left to the system. `appColor` asks a context told which mode is in force instead. The three colours in
+AppThemeLight and AppThemeDark stay written out, because the window is dressed before any code runs; they
+are plain white and black and have never moved.
+
 **Ask the platform before writing a number down.** `systemDimension` and `systemTextSize` in `MainActivity`
 read the theme, and four measures come from there: the height of a list row and of a menu row, the side
 padding of a list row, the padding inside a dialog, and the size of text that names a control. The values

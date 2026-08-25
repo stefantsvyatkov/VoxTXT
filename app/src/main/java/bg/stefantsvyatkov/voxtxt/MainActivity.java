@@ -505,7 +505,27 @@ public class MainActivity extends Activity implements ReaderService.Listener {
     private int menuRowHeight() { return systemDimension(android.R.attr.listPreferredItemHeightSmall, 48); }
     private float labelTextSize() { return systemTextSize(android.R.attr.textAppearanceMedium, 18f); }
     private float uiSize(float base) { return base * getSettings().getInt("interface_scale", 100) / 100f; }
-    private int appColor(int resource) { String theme = getSettings().getString("theme", "system"); if ("dark".equals(theme)) { if (resource == R.color.text_secondary) return Color.rgb(208,208,208); if (resource == R.color.highlight) return Color.rgb(255,213,79); if (resource == R.color.button_bg) return Color.rgb(18,90,173); if (resource == R.color.button_text) return Color.WHITE; if (resource == R.color.slider_track) return Color.rgb(60,60,60); if (resource == R.color.slider_fill) return Color.rgb(66,165,245); return resource == R.color.text_primary || resource == R.color.accent ? Color.WHITE : Color.BLACK; } if ("light".equals(theme)) { if (resource == R.color.text_secondary) return Color.rgb(51,51,51); if (resource == R.color.highlight) return Color.rgb(255,213,79); if (resource == R.color.button_bg) return Color.rgb(13,71,161); if (resource == R.color.button_text) return Color.WHITE; if (resource == R.color.slider_track) return Color.rgb(201,201,201); if (resource == R.color.slider_fill) return Color.rgb(13,71,161); return resource == R.color.text_primary || resource == R.color.accent ? Color.BLACK : Color.WHITE; } return getColor(resource); }
+    // The app has a theme of its own, and Android picks resources by the phone's setting rather than by ours.
+    // The colours are therefore asked of a context that has been told which mode is in force, instead of being
+    // written down a second time in here - which is how a colour changed in one place once reached only half
+    // the users. colors.xml and its night twin are the only place a colour is written.
+    private android.content.Context colourSource;
+    private String colourSourceFor;
+    private int appColor(int resource) {
+        String theme = getSettings().getString("theme", "system");
+        if (colourSource == null || !theme.equals(colourSourceFor)) {
+            colourSourceFor = theme;
+            if ("system".equals(theme)) colourSource = this;
+            else {
+                android.content.res.Configuration mode = new android.content.res.Configuration(getResources().getConfiguration());
+                mode.uiMode = (mode.uiMode & ~android.content.res.Configuration.UI_MODE_NIGHT_MASK)
+                    | ("dark".equals(theme) ? android.content.res.Configuration.UI_MODE_NIGHT_YES
+                                            : android.content.res.Configuration.UI_MODE_NIGHT_NO);
+                colourSource = createConfigurationContext(mode);
+            }
+        }
+        return colourSource.getColor(resource);
+    }
     private android.content.SharedPreferences getSettings() { return getSharedPreferences("reader_settings", MODE_PRIVATE); }
     // Explicitly named so it no longer depends on the class package the way Activity.getPreferences() does.
     private android.content.SharedPreferences documents() { return getSharedPreferences(DOCUMENT_PREFS, MODE_PRIVATE); }
@@ -710,6 +730,9 @@ public class MainActivity extends Activity implements ReaderService.Listener {
         int position = fromStart ? 0 : reader.savedPosition(currentUri);
         contentsOpen.clear(); contentsShown.clear(); contentsChosen = -1;
         reader.load(currentUri, currentName, loaded, position, fromWeb, loadedHeadings);
+        // What the two buttons are called follows the unit in force, and that can change with the document
+        // itself: sections are on offer only while a book that names its parts is open.
+        updateNavLabels();
         if (resumeAfterFilePickerLoad) { resumeAfterFilePickerLoad = false; scheduleAutomaticPlayback(); }
         markReady();
     }
@@ -2497,6 +2520,7 @@ public class MainActivity extends Activity implements ReaderService.Listener {
         documents().edit().remove("last_uri").apply();
         forgetCachedPage();
         if (reader != null) reader.clearDocument();
+        updateNavLabels();
     }
     @android.annotation.SuppressLint("GestureBackNavigation")
     @Override public void onBackPressed() { if (showingRecent) closeRecent(); else leaveReader(); }

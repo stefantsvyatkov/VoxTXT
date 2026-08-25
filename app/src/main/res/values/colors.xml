@@ -6,8 +6,8 @@
     <color name="text_primary">#000000</color>
     <color name="text_secondary">#333333</color>
     <color name="highlight">#FFD54F</color>
-    <color name="button_bg">#0D47A1</color>
+    <color name="button_bg">#002171</color>
     <color name="button_text">#FFFFFF</color>
     <color name="slider_track">#C9C9C9</color>
-    <color name="slider_fill">#0D47A1</color>
+    <color name="slider_fill">#0F7A38</color>
 </resources>
