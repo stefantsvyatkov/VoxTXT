@@ -180,6 +180,12 @@ opens once from the picker and then says "unsupported content" from Recent files
 swallowed, so nothing said what had happened. A permission that cannot be read is `file_unavailable`, not
 `unsupported_content`. `forgetBook` gives the grant back, because Android keeps only so many.
 
+**What was read out of a document is kept for the twenty documents in the list**, in `doccache/`, and the
+rule is the same as for the page cache: the file is the truth, the copy stands in for it. Size and modified
+time decide whether the copy is still the file; only an unreachable file is read from the copy regardless.
+Kept because a document handed over by another app has an address good for one moment, and because opening a
+known book again should not mean unpacking and parsing it a second time.
+
 ## Settings keys — the sharpest trap
 
 Settings live in `reader_settings`. **The document profile uses unprefixed keys and the web profile prefixes

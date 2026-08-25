@@ -9,11 +9,13 @@
         <exclude domain="sharedpref" path="book_positions.xml"/>
         <exclude domain="sharedpref" path="sleep_rewind_state.xml"/>
         <exclude domain="file" path="last_page.txt"/>
+        <exclude domain="file" path="doccache/"/>
     </cloud-backup>
     <device-transfer>
         <exclude domain="sharedpref" path="reader_documents.xml"/>
         <exclude domain="sharedpref" path="book_positions.xml"/>
         <exclude domain="sharedpref" path="sleep_rewind_state.xml"/>
         <exclude domain="file" path="last_page.txt"/>
+        <exclude domain="file" path="doccache/"/>
     </device-transfer>
 </data-extraction-rules>

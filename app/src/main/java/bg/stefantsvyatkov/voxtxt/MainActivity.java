@@ -541,6 +541,14 @@ public class MainActivity extends Activity implements ReaderService.Listener {
         io.execute(() -> {
             try {
                 String fileName = displayFileName(uri);
+                String prefix = getString(R.string.footnote_prefix), stamp = documentStamp(uri);
+                Kept kept = keptDocument(uri.toString());
+                // The same file as last time, so the reading it gave is used as it stands. This is what makes
+                // a ten megabyte manual open at once instead of being unpacked and read through again.
+                if (kept != null && !stamp.isEmpty() && stamp.equals(kept.stamp) && prefix.equals(kept.notePrefix)) {
+                    showDocument(uri, kept.name, kept.text, kept.plainTextFile, kept.headings, remember);
+                    return;
+                }
                 // Whatever goes wrong in getting hold of the bytes is the same thing to a reader: the file is
                 // not there to be read. A provider that has forgotten the document, a permission that was
                 // never kept, an address that no longer names anything - each throws something of its own,
@@ -548,8 +556,13 @@ public class MainActivity extends Activity implements ReaderService.Listener {
                 // nothing and pointed at the format.
                 byte[] bytes;
                 try { bytes = readLimited(uri); }
-                catch (Unreadable e) { throw e; }
-                catch (Exception e) { throw new Unreadable(getString(R.string.file_unavailable)); }
+                // A document handed over by another app comes with an address good for that one moment, and
+                // an address in the cloud can stop answering. What was read from it is still here, so the
+                // book opens from that rather than not at all.
+                catch (Exception e) {
+                    if (kept != null) { showDocument(uri, kept.name, kept.text, kept.plainTextFile, kept.headings, remember); return; }
+                    throw e instanceof Unreadable ? (Unreadable)e : new Unreadable(getString(R.string.file_unavailable));
+                }
                 // The name first, because it is cheap and usually right. When it settles nothing - a
                 // manager that hands over a nameless stream - the bytes themselves are asked.
                 String kind = DocumentText.kindOf(fileName);
@@ -576,12 +589,9 @@ public class MainActivity extends Activity implements ReaderService.Listener {
                     loaded.length() == content.text.length() ? content.headings : java.util.Collections.<DocumentText.Heading>emptyList();
                 if (loaded.length() > DocumentText.MAX_TEXT) throw new Unreadable(getString(R.string.document_too_long));
                 if (loaded.trim().isEmpty()) throw new Unreadable(getString(R.string.file_empty));
-                String name = DocumentText.titleOf(kind, bytes, withoutExtension(fileName)); runOnUiThread(() -> {
-                    if (destroyed) return; loadedText = loaded; loadedHeadings = headings; fromPlainTextFile = plain; fromWeb = false; fromWebPage = false; currentUri = uri.toString(); currentName = name; title.setText(name); title.setVisibility(View.VISIBLE); title.setPadding(0, 0, 0, dp(8)); loading = false;
-                    if (remember) documents().edit().putString("last_uri", currentUri).apply();
-                    forgetCachedPage();
-                    addRecent(DOCUMENTS_LIST, currentUri, currentName); if (reader == null) pendingText = loaded; else finishLoad(loaded);
-                });
+                String name = DocumentText.titleOf(kind, bytes, withoutExtension(fileName));
+                keepDocument(uri.toString(), stamp, prefix, name, plain, loaded, headings);
+                showDocument(uri, name, loaded, plain, headings, remember);
             // Running out of memory is an Error and not an Exception, so it would pass a plain catch by and
             // take the app down with it. A document too big to hold is a thing to be told about, not a crash.
             } catch (Exception | OutOfMemoryError e) { runOnUiThread(() -> { markReady(); loading = false; status.setText(R.string.open_failed); toast(e instanceof Unreadable ? e.getMessage()
@@ -589,6 +599,103 @@ public class MainActivity extends Activity implements ReaderService.Listener {
                         : e instanceof SecurityException ? getString(R.string.file_unavailable)
                         : getString(R.string.unsupported_content)); updateControls(); if (resumeAfterFilePickerLoad) { resumeAfterFilePickerLoad = false; scheduleAutomaticPlayback(); } }); }
         });
+    }
+    private void showDocument(Uri uri, String name, String loaded, boolean plain, java.util.List<DocumentText.Heading> headings, boolean remember) {
+        runOnUiThread(() -> {
+            if (destroyed) return; loadedText = loaded; loadedHeadings = headings; fromPlainTextFile = plain; fromWeb = false; fromWebPage = false; currentUri = uri.toString(); currentName = name; title.setText(name); title.setVisibility(View.VISIBLE); title.setPadding(0, 0, 0, dp(8)); loading = false;
+            if (remember) documents().edit().putString("last_uri", currentUri).apply();
+            forgetCachedPage();
+            addRecent(DOCUMENTS_LIST, currentUri, currentName);
+            io.execute(this::tidyKeptDocuments);
+            if (reader == null) pendingText = loaded; else finishLoad(loaded);
+        });
+    }
+
+    // What was read out of a document, kept beside the list of recent files. Two things come of it.
+    //
+    // A document handed over by another app arrives with an address good for that one moment only; without
+    // this, its row in Recent files was there but opened nothing. And a document that is still where it was
+    // opens at once, because unpacking it and reading it through again is the slowest thing the app does.
+    //
+    // The file itself stays the truth. Its size and time are asked of the provider and kept here; if they
+    // still match, what was read is used, and if they do not, the file is read again. Only when the file
+    // cannot be reached at all does an unmatched copy stand in for it.
+    private static final String KEPT_FOLDER = "doccache";
+    private static final int KEPT_VERSION = 1;
+    private static final class Kept {
+        String name = "", stamp = "", notePrefix = "", text = "";
+        boolean plainTextFile;
+        java.util.List<DocumentText.Heading> headings = java.util.Collections.emptyList();
+    }
+    private File keptFolder() { File folder = new File(getFilesDir(), KEPT_FOLDER); folder.mkdirs(); return folder; }
+    private File keptFile(String uri) { return new File(keptFolder(), Integer.toHexString(uri.hashCode()) + ".bin"); }
+    private void keepDocument(String uri, String stamp, String notePrefix, String name, boolean plain,
+                              String text, java.util.List<DocumentText.Heading> headings) {
+        try (java.io.DataOutputStream out = new java.io.DataOutputStream(new java.io.BufferedOutputStream(new FileOutputStream(keptFile(uri))))) {
+            out.writeInt(KEPT_VERSION);
+            writeText(out, uri); writeText(out, stamp); writeText(out, notePrefix); writeText(out, name);
+            out.writeBoolean(plain);
+            out.writeInt(headings.size());
+            for (DocumentText.Heading h : headings) { writeText(out, h.title); out.writeInt(h.level); out.writeInt(h.offset); }
+            writeText(out, text);
+        } catch (Exception | OutOfMemoryError ignored) { keptFile(uri).delete(); }
+    }
+    private Kept keptDocument(String uri) {
+        File file = keptFile(uri);
+        if (!file.exists()) return null;
+        try (java.io.DataInputStream in = new java.io.DataInputStream(new java.io.BufferedInputStream(new FileInputStream(file)))) {
+            if (in.readInt() != KEPT_VERSION) return null;
+            // Two addresses can land on the same name, so the address itself is written down and checked.
+            if (!uri.equals(readText(in))) return null;
+            Kept kept = new Kept();
+            kept.stamp = readText(in); kept.notePrefix = readText(in); kept.name = readText(in);
+            kept.plainTextFile = in.readBoolean();
+            int count = in.readInt();
+            java.util.List<DocumentText.Heading> headings = new ArrayList<>();
+            for (int i = 0; i < count; i++) headings.add(new DocumentText.Heading(readText(in), in.readInt(), in.readInt()));
+            kept.headings = headings;
+            kept.text = readText(in);
+            return kept.text.isEmpty() ? null : kept;
+        } catch (Exception | OutOfMemoryError ignored) { file.delete(); return null; }
+    }
+    // Whatever is not one of the twenty documents in the list goes, which is the same rule the list itself
+    // keeps. Nothing is counted in megabytes: twenty readings are twenty readings.
+    private void tidyKeptDocuments() {
+        try {
+            java.util.Set<String> wanted = new java.util.HashSet<>();
+            JSONArray recent = new JSONArray(documents().getString(DOCUMENTS_LIST, "[]"));
+            for (int i = 0; i < recent.length(); i++) {
+                String uri = recent.getJSONObject(i).optString("uri");
+                if (!uri.isEmpty()) wanted.add(keptFile(uri).getName());
+            }
+            File[] files = keptFolder().listFiles();
+            if (files == null) return;
+            for (File file : files) if (!wanted.contains(file.getName())) file.delete();
+        } catch (Exception ignored) {}
+    }
+    // Long strings, and a heading title is one of them: writeUTF gives up past sixty-four kilobytes.
+    private static void writeText(java.io.DataOutputStream out, String value) throws IOException {
+        byte[] raw = value.getBytes(StandardCharsets.UTF_8);
+        out.writeInt(raw.length); out.write(raw);
+    }
+    private static String readText(java.io.DataInputStream in) throws IOException {
+        int length = in.readInt();
+        if (length < 0 || length > 64 * 1024 * 1024) throw new IOException("bad length");
+        byte[] raw = new byte[length]; in.readFully(raw);
+        return new String(raw, StandardCharsets.UTF_8);
+    }
+    // How to tell whether the file is still the one that was read. A provider that answers neither is left
+    // alone: then what was kept is only ever used when the file cannot be reached at all.
+    private String documentStamp(Uri uri) {
+        try (android.database.Cursor c = getContentResolver().query(uri,
+                new String[]{OpenableColumns.SIZE, android.provider.DocumentsContract.Document.COLUMN_LAST_MODIFIED}, null, null, null)) {
+            if (c != null && c.moveToFirst()) {
+                String size = c.isNull(0) ? "" : String.valueOf(c.getLong(0));
+                String when = c.getColumnCount() < 2 || c.isNull(1) ? "" : String.valueOf(c.getLong(1));
+                return size.isEmpty() && when.isEmpty() ? "" : size + ":" + when;
+            }
+        } catch (Exception ignored) {}
+        return "";
     }
     private void finishLoad(String loaded) {
         // A book is picked up where it was left. A web page is three minutes long, and being dropped into
@@ -2123,6 +2230,11 @@ public class MainActivity extends Activity implements ReaderService.Listener {
             documents().edit().putString(list, fresh.toString()).apply();
         } catch (JSONException ignored) {}
     }
+    private RecentDocument keptAsRecent(String uri, Kept kept) {
+        RecentDocument document = new RecentDocument(uri, kept.name, kept.text, kept.plainTextFile);
+        document.headings = kept.headings;
+        return document;
+    }
     private void showRecent() {
         pausePlaybackOutsideReader(); setTitle(getString(R.string.recent_books));
         showingRecent = true; int pad = dp(16);
@@ -2230,6 +2342,7 @@ public class MainActivity extends Activity implements ReaderService.Listener {
         // many of these, and one held for a book that was removed years ago is one fewer for a book still read.
         try { getContentResolver().releasePersistableUriPermission(Uri.parse(itemUri), Intent.FLAG_GRANT_READ_URI_PERMISSION); }
         catch (Exception ignored) {}
+        keptFile(itemUri).delete();
         if (itemUri.equals(currentUri)) clearCurrentDocument();
         if (itemUri.equals(documents().getString("last_uri", ""))) documents().edit().remove("last_uri").apply();
         if (itemUri.equals(documents().getString("last_page_uri", ""))) forgetCachedPage();
@@ -2298,7 +2411,13 @@ public class MainActivity extends Activity implements ReaderService.Listener {
     private RecentDocument readRecentDocument(JSONObject item) {
         try {
             String uriValue = item.optString("uri"); Uri uri = Uri.parse(uriValue); String fileName = displayFileName(uri);
-            byte[] bytes = readLimited(uri);
+            Kept kept = keptDocument(uriValue);
+            String prefix = getString(R.string.footnote_prefix), stamp = documentStamp(uri);
+            if (kept != null && !stamp.isEmpty() && stamp.equals(kept.stamp) && prefix.equals(kept.notePrefix))
+                return keptAsRecent(uriValue, kept);
+            byte[] bytes;
+            try { bytes = readLimited(uri); }
+            catch (Exception e) { return kept == null ? null : keptAsRecent(uriValue, kept); }
             String kind = DocumentText.kindOf(fileName);
             if (kind.isEmpty()) kind = DocumentText.kindOfContent(bytes);
             if (kind.isEmpty()) return null;
@@ -2317,6 +2436,7 @@ public class MainActivity extends Activity implements ReaderService.Listener {
             String savedName = item.optString("name");
             RecentDocument document = new RecentDocument(uriValue, savedName.isEmpty() ? withoutExtension(fileName) : savedName, loaded, plain);
             if (loaded.length() == content.text.length()) document.headings = content.headings;
+            keepDocument(uriValue, stamp, prefix, document.name, plain, loaded, document.headings);
             return document;
         } catch (Exception | OutOfMemoryError ignored) { return null; }
     }

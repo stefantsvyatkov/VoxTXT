@@ -13,4 +13,8 @@
     <!-- The text of the last web page, kept so it survives the app being killed. It belongs to the phone
          it was read on; carrying an old article onto a new one is a surprise, not a convenience. -->
     <exclude domain="file" path="last_page.txt"/>
+    <!-- The readings kept for the twenty documents in the list. They belong to the files on this phone,
+         whose permissions do not survive a reinstall, so carrying them over would only fill a new phone
+         with books it cannot open. -->
+    <exclude domain="file" path="doccache/"/>
 </full-backup-content>
