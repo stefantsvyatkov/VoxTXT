@@ -125,6 +125,61 @@ backwards, not an idea.
   wrong to the user. The linear device-volume fade is the one that works; leave it alone.
 - **Switching voices inside Neural Speechlab.** Proven impossible by decompiling that engine. Not our bug.
 
+## Reading a document, and what it may cost
+
+**The reading is shown through a window, not all at once.** `WINDOW_REACH` characters each side of the
+sentence, cut at a line break, moved when the reading comes within `WINDOW_EDGE` of an edge. Android lays out
+every character it is given, and a three-million-character book took seconds to lay out - once on opening and
+again on every rebuild of the screen, which is what froze the app on returning from a page. The window keeps
+the text view at sixty thousand characters whatever the book. The highlight and the scroll work in
+window-relative positions; everything else - search, bookmarks, contents, navigation - still works on the
+whole text. The one visible loss is that scrolling by hand reaches the end of the window, not the end of the
+book.
+
+**Two refusals, and only two.** Over fifty megabytes on the storage: the file is too big. Over `MAX_TEXT`
+characters of reading: the document is too long. `MAX_UNPACKED` is a stop against a made-up archive, not a
+limit on books, and is never explained to the reader. Do not add a third measure - the size of a file says
+almost nothing about what it costs, which is the whole reason there were once three.
+
+**An archive gives up only what is read.** `worthKeeping` is why a forty-megabyte manual of photographs opens
+in a tenth of a second and why an EPUB carrying recorded narration costs nothing: pictures, fonts, sound, film
+and stylesheets are counted past without being held.
+
+**Running out of memory is an Error, not an Exception.** It passed a plain `catch` by and took the app down.
+Both document-loading paths catch it and say the document is too long.
+
+## Contents, and how a heading is recognised
+
+**Only what a document declares is a heading.** FB2 nests its sections, EPUB carries a table of its own, DOCX
+says it in the style. Nothing is guessed at from bold text or capitals, and eleven of the forty real manuals
+correctly have no contents at all despite looking full of headings.
+
+**In DOCX the style's own declaration is the answer, never the name it is filed under and never what it is
+built on.** Real manuals file heading styles as "1", "21", "Style37"; "Heading10" and "Heading11" are what
+Word writes for a renamed Heading 1, not levels ten and eleven; an outline level of nine means body text and
+is how a table-of-contents heading keeps itself out. Following `basedOn` looked right and was wrong: RUBY 10
+sets its front matter in a style built on Heading 3, and inheriting turned a page of copyright text into three
+entries of the contents.
+
+**Failing to read the contents must never stop a document from opening.** The words are the point; the list of
+parts is a convenience on top of them.
+
+**Do not ask jsoup for an element whose name carries a colon.** `selectFirst("> w\\:pPr")` works on the
+desktop and failed on the phone, and every DOCX stopped opening. The children are walked by hand instead.
+
+**A press in the contents both chooses and opens, and each announced itself.** On a row that opens something
+only the opening is said; a row that opens nothing says "selected" in the platform's own words. The triangle
+is drawn for the eye and its changing is never read out. The page is built once and only added to and taken
+from - rebuilding it was what made the screen blink and threw away the row the reader was standing on.
+
+## Opening a file, and keeping the right to
+
+**The picker intent must carry `FLAG_GRANT_READ_URI_PERMISSION | FLAG_GRANT_PERSISTABLE_URI_PERMISSION`.**
+Without them the grant lives only as long as the task, `takePersistableUriPermission` is refused, and a book
+opens once from the picker and then says "unsupported content" from Recent files ever after. The refusal was
+swallowed, so nothing said what had happened. A permission that cannot be read is `file_unavailable`, not
+`unsupported_content`. `forgetBook` gives the grant back, because Android keeps only so many.
+
 ## Settings keys — the sharpest trap
 
 Settings live in `reader_settings`. **The document profile uses unprefixed keys and the web profile prefixes
@@ -183,6 +238,12 @@ the backup on purpose: the permissions to open those files are not restored, so 
   tools and removes what the page has pinned over itself, and that is the whole of it.
 
 ## Testing without a device
+
+**Build and hand over an APK before a piece of work is called finished.** The whole DOCX heading reader was
+written, verified against forty real manuals on the desktop and reported as done without once running on a
+phone; the jsoup selector above then broke every DOCX, and it took a round trip to find. Desktop verification
+says the logic is right, not that the app works.
+
 
 Most of the risky logic is plain Java and can be run on the desktop. That is how the formats and the web
 extraction were verified: compile the class against the jars in the Gradle cache and run it against real

@@ -25,7 +25,28 @@ import java.util.zip.ZipInputStream;
 final class DocumentText {
 
     // A zipped book unpacks to far more than it weighs, so what comes out of the archive is capped as well.
-    private static final long MAX_UNPACKED = 24L * 1024 * 1024;
+    // The one measure that means anything to a reader: how long the finished reading is. The size of a file
+    // says almost nothing - a ten megabyte manual is mostly pictures, and a three megabyte book can be five
+    // million words. So the door only turns away what is too big to pick up, and this decides the rest.
+    // Affordable because the reading is shown through a window: the text view is handed sixty thousand
+    // characters whatever the book, and the rest is only a string held in memory.
+    static final int MAX_TEXT = 8_000_000;
+    // Not a limit on how large a book may be - that is what MAX_TEXT is for - but a stop against an archive
+    // built to unpack into something enormous. No real document comes anywhere near it.
+    private static final long MAX_UNPACKED = 512L * 1024 * 1024;
+    // What is worth unpacking. Pictures, fonts, sound, film and stylesheets are never opened by this reader,
+    // so they are counted past without being held: that is what lets a ten megabyte manual open at all, and
+    // it is also why an EPUB carrying recorded narration costs nothing here - the recording is simply never
+    // taken out of the archive.
+    private static final String[] WORTH_KEEPING = {".xml", ".xhtml", ".html", ".htm", ".ncx", ".opf", ".txt", ".fb2", ".docx", ".epub"};
+    private static boolean worthKeeping(String name) {
+        if (name == null) return false;
+        String lower = name.toLowerCase(Locale.ROOT);
+        for (String ending : WORTH_KEEPING) if (lower.endsWith(ending)) return true;
+        return false;
+    }
+    // Too much of it to read, as opposed to unreadable. Two different things to be told.
+    static class TooLong extends IOException { TooLong() { super("too long"); } }
 
     private DocumentText() {}
 
@@ -128,10 +149,86 @@ final class DocumentText {
         return fallback;
     }
 
+    // A document that declares its own shape says so here: the headings it names, how deeply each one sits, and
+    // where in the finished text it begins. FB2 nests sections and titles them, EPUB carries a table of its own,
+    // DOCX marks paragraphs with heading levels; plain text declares nothing and gets an empty list.
+    //
+    // The place is remembered by putting a mark in the text at the moment the heading is written, and reading
+    // the marks off at the very end. Anything that happens to the text in between - notes woven in, white space
+    // squeezed - moves the marks with it, which counting characters as we went would not have survived.
+    static final class Heading {
+        final String title; final int level; final int offset;
+        Heading(String title, int level, int offset) { this.title = title; this.level = level; this.offset = offset; }
+    }
+    static final class Content {
+        final String text; final List<Heading> headings;
+        Content(String text, List<Heading> headings) { this.text = text; this.headings = headings; }
+    }
+    private static final char HEAD_OPEN = '\uE002', HEAD_CLOSE = '\uE003';
+    private static String headingMark(int index) { return HEAD_OPEN + String.valueOf(index) + HEAD_CLOSE; }
+    // A heading may itself carry a footnote, and the mark standing in for that note is no part of its name.
+    // Left in, it travelled into the contents as a pair of characters with a number between them, which a
+    // screen reader reads out as so much noise, and stopped the name from ever matching the text again. The
+    // mark stays where it is in the reading, so the note is still heard in its place.
+    private static String withoutMarks(String value) {
+        int at = value.indexOf(NOTE_OPEN);
+        if (at < 0) return value;
+        StringBuilder out = new StringBuilder(value.length());
+        for (int i = 0; i < value.length(); i++) {
+            char c = value.charAt(i);
+            if (c != NOTE_OPEN) { out.append(c); continue; }
+            int close = value.indexOf(NOTE_CLOSE, i);
+            if (close < 0) break;
+            i = close;
+        }
+        return collapse(out.toString());
+    }
+    private static Content withHeadings(String text, List<String> titles, List<Integer> levels, String what) throws IOException {
+        Content content = withHeadings(text, titles, levels);
+        if (content.text.isEmpty()) throw new IOException("empty " + what);
+        return content;
+    }
+    private static Content withHeadings(String text, List<String> titles, List<Integer> levels) {
+        // Taken out from the front of the text backwards, so that a mark still waiting keeps the place it had.
+        // The marks are not always in the order they were written: a part, its first chapter and that chapter's
+        // first scene can all point at the same spot, and pulling them out in any other order moves them apart.
+        StringBuilder rest = new StringBuilder(text);
+        int[] places = new int[titles.size()];
+        for (int i = 0; i < titles.size(); i++) places[i] = text.indexOf(headingMark(i));
+        Integer[] order = new Integer[titles.size()];
+        for (int i = 0; i < order.length; i++) order[i] = i;
+        java.util.Arrays.sort(order, (a, b) -> Integer.compare(places[a], places[b]));
+        int removed = 0;
+        Heading[] found = new Heading[titles.size()];
+        for (Integer i : order) {
+            if (places[i] < 0) continue;
+            int at = places[i] - removed, length = headingMark(i).length();
+            rest.delete(at, at + length);
+            removed += length;
+            found[i] = new Heading(titles.get(i), levels.get(i), at);
+        }
+        int lead = 0;
+        while (lead < rest.length() && Character.isWhitespace(rest.charAt(lead))) lead++;
+        String value = rest.toString().trim();
+        // Back into the order the document names them in, and no entry may begin before the one above it.
+        List<Heading> moved = new ArrayList<>();
+        int floor = 0;
+        for (int i = 0; i < places.length; i++) {
+            if (places[i] < 0) continue;
+            Heading h = found[i];
+            floor = Math.max(floor, Math.max(0, Math.min(value.length(), h.offset - lead)));
+            moved.add(new Heading(h.title, h.level, floor));
+        }
+        return new Content(value, moved);
+    }
+
     static String extract(String kind, byte[] bytes) throws IOException { return extract(kind, bytes, ""); }
     // notePrefix is the words a footnote is announced with, and it comes from the screen because that is
     // where the language lives. Empty means the notes are left out, which is what the older behaviour was.
     static String extract(String kind, byte[] bytes, String notePrefix) throws IOException {
+        return read(kind, bytes, notePrefix).text;
+    }
+    static Content read(String kind, byte[] bytes, String notePrefix) throws IOException {
         switch (kind) {
             case "fb2": return fromFb2(bytes, notePrefix);
             case "epub": return fromEpub(bytes, notePrefix);
@@ -198,7 +295,7 @@ final class DocumentText {
     // The little numbers that point at those notes are removed as well. They sit tight against the word they
     // follow, so what reaches the synthesizer is "the tavern1" - and what comes out is the word with a digit
     // stuck to its end, in the middle of a sentence.
-    private static String fromFb2(byte[] bytes, String notePrefix) throws IOException {
+    private static Content fromFb2(byte[] bytes, String notePrefix) throws IOException {
         Document book = xml(new String(bytes, charsetOfXml(bytes)));
         // The notes of an FB2 are gathered in a body of their own at the end, each in a section carrying the
         // name the little number points at.
@@ -217,19 +314,38 @@ final class DocumentText {
             link.replaceWith(new org.jsoup.nodes.TextNode(mark(used.size() - 1)));
         }
         StringBuilder text = new StringBuilder();
+        List<String> titles = new ArrayList<>();
+        List<Integer> levels = new ArrayList<>();
         for (Element body : book.select("body")) {
             if ("notes".equalsIgnoreCase(body.attr("name"))) continue;
-            append(text, ArticleReader.plainText(body));
+            readFb2(body, 0, text, titles, levels);
         }
-        if (text.length() == 0) throw new IOException("empty fb2");
-        return weaveNotes(text.toString().trim(), used, notePrefix);
+        return withHeadings(weaveNotes(text.toString().trim(), used, notePrefix), titles, levels, "fb2");
+    }
+    // Sections within sections is how an FB2 says that a chapter belongs to a part. Each one is read in turn:
+    // its title first, marked as a heading of its depth, then whatever of it is not another section, then the
+    // sections inside it. Reading a whole body in one go, as this used to, gives the same words in the same
+    // order but says nothing about where anything begins.
+    private static void readFb2(Element node, int depth, StringBuilder text, List<String> titles, List<Integer> levels) {
+        for (Element child : node.children()) {
+            if ("section".equalsIgnoreCase(child.normalName())) {
+                Element title = child.selectFirst("> title");
+                String name = title == null ? "" : withoutMarks(collapse(ArticleReader.plainText(title)));
+                if (!name.isEmpty()) {
+                    titles.add(name); levels.add(depth);
+                    append(text, headingMark(titles.size() - 1) + name);
+                    title.remove();
+                }
+                readFb2(child, depth + 1, text, titles, levels);
+            } else append(text, ArticleReader.plainText(child));
+        }
     }
 
     // EPUB is a zip. Which file inside it is the book, and in what order its chapters go, is written down in
     // the archive itself: container.xml points at the package file, and the spine of that package lists the
     // chapters in reading order. Following that is the difference between a book and a pile of chapters in
     // whatever order the archive happened to store them.
-    private static String fromEpub(byte[] bytes, String notePrefix) throws IOException {
+    private static Content fromEpub(byte[] bytes, String notePrefix) throws IOException {
         Map<String, byte[]> archive = unzip(bytes);
         String opfPath = opfPath(archive);
         byte[] opfBytes = archive.get(opfPath);
@@ -281,12 +397,29 @@ final class DocumentText {
                 }
             }
         }
+        List<String> titles = new ArrayList<>();
+        List<Integer> levels = new ArrayList<>();
+        // file -> the ids within it the table of contents points at, in the order it points at them. An entry
+        // that names a file with no id at all belongs at the very start of that file.
+        Map<String, List<String>> wantedHeadings = new HashMap<>();
+        // Same rule as everywhere: a table of contents that cannot be read leaves the book without one, and
+        // the book is still read.
+        try { readEpubContents(archive, opfPath, base, order, titles, levels, wantedHeadings); }
+        catch (RuntimeException ignored) { titles.clear(); levels.clear(); wantedHeadings.clear(); }
         StringBuilder text = new StringBuilder();
         for (String name : order) {
             byte[] chapter = archive.get(name);
             if (chapter == null) continue;
             Document page = Jsoup.parse(new String(chapter, StandardCharsets.UTF_8));
             page.select("script, style, nav, svg").remove();
+            List<String> here = titles.isEmpty() ? null : wantedHeadings.get(name);
+            if (here != null && page.body() != null)
+                for (String id : here) {
+                    int index = Integer.parseInt(id.substring(0, id.indexOf(':')));
+                    String target = id.substring(id.indexOf(':') + 1);
+                    Element at = target.isEmpty() ? page.body() : page.getElementById(target);
+                    if (at != null) at.prependChild(new org.jsoup.nodes.TextNode(headingMark(index)));
+                }
             // A note is read where it is referred to, and taken out of the place it was kept, so that it is
             // not heard a second time when the reading reaches the end of the chapter or the end of the book.
             // One note may be pointed at from several places; it is read at every one of them.
@@ -306,8 +439,63 @@ final class DocumentText {
                 }
             if (page.body() != null) append(text, weaveNotes(ArticleReader.plainText(page.body()), used, notePrefix));
         }
-        if (text.length() == 0) throw new IOException("empty epub");
-        return text.toString().trim();
+        return withHeadings(text.toString().trim(), titles, levels, "epub");
+    }
+    // Read out of the book's own table of contents rather than guessed at from its headings: an EPUB names its
+    // parts and chapters there, and says by nesting which belongs to which. Both shapes are read - the older
+    // NCX with its navPoints, and the newer navigation document with its nested lists.
+    private static void readEpubContents(Map<String, byte[]> archive, String opfPath, String base, List<String> order,
+                                         List<String> titles, List<Integer> levels, Map<String, List<String>> wanted) {
+        byte[] part = null; String partPath = "";
+        for (String name : archive.keySet())
+            if (name.toLowerCase(Locale.ROOT).endsWith(".ncx")) { part = archive.get(name); partPath = name; break; }
+        if (part != null) {
+            Document ncx = xml(new String(part, StandardCharsets.UTF_8));
+            readNcx(ncx.selectFirst("navMap"), 0, partPath, titles, levels, wanted);
+            if (!titles.isEmpty()) return;
+        }
+        for (String name : archive.keySet()) {
+            if (!isChapter(name)) continue;
+            Document page = Jsoup.parse(new String(archive.get(name), StandardCharsets.UTF_8));
+            Element nav = page.selectFirst("nav[epub:type=toc]");
+            if (nav == null) continue;
+            readNavList(nav.selectFirst("ol"), 0, name, titles, levels, wanted);
+            if (!titles.isEmpty()) return;
+        }
+    }
+    private static void readNcx(Element node, int depth, String from, List<String> titles, List<Integer> levels, Map<String, List<String>> wanted) {
+        if (node == null) return;
+        for (Element point : node.children()) {
+            if (!"navPoint".equalsIgnoreCase(point.normalName())) continue;
+            Element label = point.selectFirst("navLabel > text");
+            Element content = point.selectFirst("content");
+            String title = label == null ? "" : collapse(label.text());
+            if (!title.isEmpty() && content != null) rememberHeading(title, depth, from, content.attr("src"), titles, levels, wanted);
+            readNcx(point, depth + 1, from, titles, levels, wanted);
+        }
+    }
+    private static void readNavList(Element list, int depth, String from, List<String> titles, List<Integer> levels, Map<String, List<String>> wanted) {
+        if (list == null) return;
+        for (Element item : list.children()) {
+            if (!"li".equalsIgnoreCase(item.normalName())) continue;
+            Element link = item.selectFirst("> a");
+            if (link != null) {
+                String title = collapse(link.text());
+                if (!title.isEmpty()) rememberHeading(title, depth, from, link.attr("href"), titles, levels, wanted);
+            }
+            readNavList(item.selectFirst("> ol"), depth + 1, from, titles, levels, wanted);
+        }
+    }
+    private static void rememberHeading(String title, int depth, String from, String href, List<String> titles,
+                                        List<Integer> levels, Map<String, List<String>> wanted) {
+        if (href == null || href.isEmpty()) return;
+        String base = from.contains("/") ? from.substring(0, from.lastIndexOf('/') + 1) : "";
+        String file = resolve(base, href);
+        String id = href.contains("#") ? href.substring(href.indexOf('#') + 1) : "";
+        titles.add(title); levels.add(depth);
+        List<String> here = wanted.get(file);
+        if (here == null) { here = new ArrayList<>(); wanted.put(file, here); }
+        here.add((titles.size() - 1) + ":" + id);
     }
 
     private static String collapse(String value) { return value.replaceAll("\\s+", " ").trim(); }
@@ -317,13 +505,20 @@ final class DocumentText {
     // into every document and are not notes at all.
     private static void readNotes(byte[] part, String tag, String kind, Map<String, String> into, String notePrefix) {
         if (part == null || notePrefix.isEmpty()) return;
-        for (Element note : xml(new String(part, StandardCharsets.UTF_8)).getElementsByTag(tag)) {
+        Document notes = xml(new String(part, StandardCharsets.UTF_8));
+        dropFallbacks(notes);
+        for (Element note : notes.getElementsByTag(tag)) {
             String id = note.attr("w:id");
             if (id.isEmpty() || id.startsWith("-") || "0".equals(id)) continue;
             String body = collapse(runsOf(note));
             if (!body.isEmpty()) into.put(kind + id, body);
         }
     }
+    // A shape is written twice over: once the way Word draws it now, and once again the old way, so that an
+    // older Word still has something to show. Both halves carry the same words, and reading them both is what
+    // made the text inside such a shape arrive twice - said twice by the voice, and standing twice in the
+    // contents. The old half is the one to drop: the new one is the one this reader understands.
+    private static void dropFallbacks(Document document) { document.getElementsByTag("mc:Fallback").remove(); }
     private static String runsOf(Element node) {
         StringBuilder value = new StringBuilder();
         for (Element run : node.getElementsByTag("w:t")) value.append(run.wholeText()).append(' ');
@@ -373,7 +568,7 @@ final class DocumentText {
     // DOCX is a zip too, and all the words are in one file inside it. Every w:p is a paragraph and every w:t a
     // run of text within it; a paragraph can be broken into many runs by nothing more than a change of font,
     // so the runs are joined and the break is made at the paragraph.
-    private static String fromDocx(byte[] bytes, String notePrefix) throws IOException {
+    private static Content fromDocx(byte[] bytes, String notePrefix) throws IOException {
         Map<String, byte[]> archive = unzip(bytes);
         byte[] main = archive.get("word/document.xml");
         if (main == null) throw new IOException("no document part");
@@ -382,8 +577,18 @@ final class DocumentText {
         readNotes(archive.get("word/endnotes.xml"), "w:endnote", "e", notes, notePrefix);
         List<String> used = new ArrayList<>();
         Document document = xml(new String(main, StandardCharsets.UTF_8));
+        dropFallbacks(document);
+        Map<String, Integer> styleLevels = headingStyles(archive.get("word/styles.xml"));
+        List<String> titles = new ArrayList<>();
+        List<Integer> levels = new ArrayList<>();
         StringBuilder text = new StringBuilder();
         for (Element paragraph : document.getElementsByTag("w:p")) {
+            // A text box holds its own paragraphs inside the paragraph that carries it, so the same words
+            // arrive twice: once from the paragraph around the box and once from the one inside it. Reading
+            // only the outer one keeps the words in their place and says them once, and a heading inside a
+            // box is still found, because the style is looked for through everything the paragraph holds.
+            if (insideAnotherParagraph(paragraph)) continue;
+            int level = headingLevel(paragraph, styleLevels);
             StringBuilder line = new StringBuilder();
             for (Element node : paragraph.getAllElements()) {
                 String tag = node.tagName();
@@ -398,10 +603,122 @@ final class DocumentText {
                 }
             }
             String value = line.toString().replaceAll("[ \t]+", " ").trim();
-            if (!value.isEmpty()) append(text, value);
+            if (value.isEmpty()) continue;
+            if (level >= 0) { titles.add(withoutMarks(collapse(value))); levels.add(level); value = headingMark(titles.size() - 1) + value; }
+            append(text, value);
         }
-        if (text.length() == 0) throw new IOException("empty docx");
-        return weaveNotes(text.toString().trim(), used, notePrefix);
+        return withHeadings(weaveNotes(text.toString().trim(), used, notePrefix), titles, levels, "docx");
+    }
+    // Word's element names carry a colon, and a colon is how a stylesheet selector names a state, so asking
+    // for one through a selector means escaping it and trusting that every parser on the way reads the escape
+    // the same. The names are looked for by hand instead: it is the same walk the selector would have made,
+    // it cannot be misread, and it does not depend on anything outside this file.
+    private static Element firstChild(Element parent, String tag) {
+        if (parent == null) return null;
+        for (Element child : parent.children()) if (tag.equalsIgnoreCase(child.tagName())) return child;
+        return null;
+    }
+    private static boolean insideAnotherParagraph(Element paragraph) {
+        for (Element above = paragraph.parent(); above != null; above = above.parent())
+            if ("w:p".equals(above.tagName())) return true;
+        return false;
+    }
+    // Which level a paragraph sits at, asked of Word in the order Word itself would answer: what is set on the
+    // paragraph, then what its style says, then the name the style goes by.
+    //
+    // The name a style is filed under is not to be trusted on its own. Real manuals arrive with heading styles
+    // filed as "1", "21" or "Style37", and with "Heading10" and "Heading11" - which Word writes when it has to
+    // rename a clashing style, and which mean heading one, not heading ten and heading eleven. Every one of
+    // those says plainly in word/styles.xml what outline level it carries, and that is what is read.
+    //
+    // Nine is Word's way of saying body text. It is written on ordinary paragraphs, and on the heading of a
+    // table of contents so that the contents does not list itself - so a nine is an answer, not a miss, and
+    // stops the question there.
+    private static int headingLevel(Element paragraph, Map<String, Integer> styleLevels) {
+        try { return levelOf(paragraph, styleLevels); } catch (RuntimeException ignored) { return -1; }
+    }
+    private static int levelOf(Element paragraph, Map<String, Integer> styleLevels) {
+        Element properties = firstChild(paragraph, "w:pPr");
+        if (properties == null) return -1;
+        Element outline = firstChild(properties, "w:outlineLvl");
+        if (outline != null) {
+            int level = number(outline.attr("w:val"));
+            if (level >= 0) return level <= 8 ? level : -1;
+        }
+        Element style = firstChild(properties, "w:pStyle");
+        if (style == null) return -1;
+        String id = style.attr("w:val");
+        if (id == null || id.isEmpty()) return -1;
+        Integer known = styleLevels.get(id);
+        if (known != null) return known <= 8 ? known : -1;
+        int named = levelFromName(id);
+        return named <= 8 ? named : -1;
+    }
+    // "Heading 1", "heading1", "Heading_20_1", "Heading #1" - the same style, written by different hands. What
+    // is left after the punctuation is a word and a number, and Word has nine levels, so anything above nine
+    // was never a level in the first place.
+    private static int levelFromName(String name) {
+        if (name == null) return -1;
+        StringBuilder plain = new StringBuilder();
+        for (int i = 0; i < name.length(); i++) {
+            char c = name.charAt(i);
+            if (Character.isLetterOrDigit(c)) plain.append(Character.toLowerCase(c));
+        }
+        String value = plain.toString();
+        if (!value.startsWith("heading") || value.length() < 8) return -1;
+        int level = number(value.substring(7));
+        return level >= 1 && level <= 9 ? level - 1 : -1;
+    }
+    private static int number(String value) {
+        try { return Integer.parseInt(value.trim()); } catch (Exception ignored) { return -1; }
+    }
+    // What every paragraph style in the document declares about its own outline level, worked out once. Only
+    // what a style says of itself counts - the level it declares, or the heading name it goes by.
+    //
+    // What a style is built on is deliberately not followed. Word does pass an outline level down that way,
+    // and following it looked right until a real manual showed what it costs: RUBY 10 sets its front matter
+    // in a style built on Heading 3, and inheriting turned a page of copyright text into three entries of the
+    // contents, one of them twenty lines long. A style meant as a heading says so itself.
+    private static Map<String, Integer> headingStyles(byte[] part) {
+        Map<String, Integer> levels = new HashMap<>();
+        if (part == null) return levels;
+        Map<String, String> basedOn = new HashMap<>();
+        Map<String, String> names = new HashMap<>();
+        Map<String, Integer> declared = new HashMap<>();
+        try {
+            Document styles = xml(new String(part, StandardCharsets.UTF_8));
+            for (Element style : styles.getElementsByTag("w:style")) {
+                if (!"paragraph".equals(style.attr("w:type"))) continue;
+                String id = style.attr("w:styleId");
+                if (id == null || id.isEmpty()) continue;
+                Element name = firstChild(style, "w:name");
+                if (name != null) names.put(id, name.attr("w:val"));
+                Element parent = firstChild(style, "w:basedOn");
+                if (parent != null) basedOn.put(id, parent.attr("w:val"));
+                Element properties = firstChild(style, "w:pPr");
+                Element outline = firstChild(properties, "w:outlineLvl");
+                if (outline != null) {
+                    int level = number(outline.attr("w:val"));
+                    if (level >= 0 && level <= 9) declared.put(id, level);
+                }
+            }
+        } catch (Exception ignored) { return levels; }
+        for (String id : names.keySet()) resolveStyle(id, declared, names, basedOn, levels, 0);
+        for (String id : declared.keySet()) resolveStyle(id, declared, names, basedOn, levels, 0);
+        return levels;
+    }
+    private static int resolveStyle(String id, Map<String, Integer> declared, Map<String, String> names,
+                                    Map<String, String> basedOn, Map<String, Integer> levels, int depth) {
+        if (id == null || depth > 8) return -1;
+        Integer already = levels.get(id);
+        if (already != null) return already;
+        int level = -1;
+        Integer own = declared.get(id);
+        if (own != null) level = own;
+        if (level < 0) level = levelFromName(names.get(id));
+        if (level < 0) level = levelFromName(id);
+        if (level >= 0) levels.put(id, level);
+        return level;
     }
 
     private static Document xml(String content) { return Jsoup.parse(content, "", Parser.xmlParser()); }
@@ -421,16 +738,25 @@ final class DocumentText {
 
     private static Map<String, byte[]> unzip(byte[] bytes) throws IOException {
         Map<String, byte[]> archive = new java.util.LinkedHashMap<>();
-        long total = 0;
+        long unpacked = 0;
         try (ZipInputStream zip = new ZipInputStream(new ByteArrayInputStream(bytes))) {
             ZipEntry entry;
             while ((entry = zip.getNextEntry()) != null) {
                 if (entry.isDirectory()) continue;
-                ByteArrayOutputStream out = new ByteArrayOutputStream();
                 byte[] buffer = new byte[16384]; int count;
+                // Counted past without being held. A picture, a font or a recording is never opened by this
+                // reader, so it costs nothing but the time it takes to walk over it.
+                if (!worthKeeping(entry.getName())) {
+                    while ((count = zip.read(buffer)) > 0) {
+                        unpacked += count;
+                        if (unpacked > MAX_UNPACKED) throw new TooLong();
+                    }
+                    continue;
+                }
+                ByteArrayOutputStream out = new ByteArrayOutputStream();
                 while ((count = zip.read(buffer)) > 0) {
-                    total += count;
-                    if (total > MAX_UNPACKED) throw new IOException("archive too large");
+                    unpacked += count;
+                    if (unpacked > MAX_UNPACKED) throw new TooLong();
                     out.write(buffer, 0, count);
                 }
                 archive.put(entry.getName(), out.toByteArray());

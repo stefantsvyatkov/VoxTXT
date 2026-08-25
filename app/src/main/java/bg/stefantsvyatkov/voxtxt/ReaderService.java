@@ -253,6 +253,9 @@ public class ReaderService extends Service implements TextToSpeech.OnInitListene
     // A book and a web page each have their own engine, voice, speed and pitch. Which of the two is in use
     // is decided by what was opened, and is switched here rather than being asked for every sentence.
     public void load(String newUri, String newTitle, String newText, int position, boolean fromWeb) {
+        load(newUri, newTitle, newText, position, fromWeb, java.util.Collections.<DocumentText.Heading>emptyList());
+    }
+    public void load(String newUri, String newTitle, String newText, int position, boolean fromWeb, List<DocumentText.Heading> headings) {
         pause(); reachedEnd = false; uri = newUri; title = newTitle; text = newText; current = Math.max(0, position);
         // A shutdown released the session; opening a book is what brings it back, together with the right to
         // answer a media key.
@@ -261,11 +264,12 @@ public class ReaderService extends Service implements TextToSpeech.OnInitListene
         useProfile(fromWeb ? WEB_PROFILE : "");
         if (sleepRewindAvailable && !newUri.equals(getSharedPreferences(SLEEP_STATE, MODE_PRIVATE).getString("uri", ""))) clearSleepRewindState();
         split(); current = Math.min(current, Math.max(0, sentences.size() - 1));
+        setSections(headings);
         loadDurations();
         savePosition(); notifyState();
     }
     public void clearDocument() {
-        pause(); reachedEnd = false; uri = ""; title = ""; text = ""; current = 0; sentences.clear();
+        pause(); reachedEnd = false; uri = ""; title = ""; text = ""; current = 0; sentences.clear(); sections.clear(); sectionStart.clear();
         setArmed(false);
         notifyState(); stopForeground(STOP_FOREGROUND_REMOVE);
     }
@@ -702,6 +706,60 @@ public class ReaderService extends Service implements TextToSpeech.OnInitListene
     }
     private String durationFile() { return durationFile(uri); }
     private String durationFile(String value) { return "timing-" + Integer.toHexString(value.hashCode()) + ".bin"; }
+    // The parts a book names for itself: what FB2 puts in its nested sections, what an EPUB writes in its own
+    // table of contents, what Word marks as a heading. Nothing is guessed at - a document that declares no
+    // shape has no contents, and the row that opens them is not shown for it.
+    //
+    // Two lists, because they answer two questions. sections is the whole tree, shown as it is written, down
+    // to a part whose chapter begins at the same word it does. sectionStart is where the reading may be sent,
+    // which is the same places with the repetitions taken out: a part, its first chapter and that chapter's
+    // first scene all begin at one sentence, and stepping through them one at a time would look stuck.
+    public static final class Section {
+        public final String title; public final int level; public final int sentence;
+        Section(String title, int level, int sentence) { this.title = title; this.level = level; this.sentence = sentence; }
+    }
+    private final List<Section> sections = new ArrayList<>();
+    private final List<Integer> sectionStart = new ArrayList<>();
+    public List<Section> sections() { return sections; }
+    public boolean hasSections() { return !sections.isEmpty(); }
+    private void setSections(List<DocumentText.Heading> headings) {
+        sections.clear(); sectionStart.clear();
+        if (headings == null || sentences.isEmpty()) return;
+        for (DocumentText.Heading heading : headings) {
+            int sentence = sentenceAt(heading.offset);
+            sections.add(new Section(heading.title, heading.level, sentence));
+            if (sectionStart.isEmpty() || sectionStart.get(sectionStart.size() - 1) != sentence) sectionStart.add(sentence);
+        }
+        // Whatever stands before the first heading is a section too. A book that opens with a note from the
+        // publisher and only then names its first chapter has a stretch at the front that belongs to no
+        // heading, and without a stop of its own it could be left but never returned to: moving back from the
+        // first chapter had nowhere to go, and moving on from the front matter jumped straight to the end.
+        if (!sectionStart.isEmpty() && sectionStart.get(0) != 0) sectionStart.add(0, 0);
+    }
+    private int sentenceAt(int offset) {
+        int low = 0, high = sentences.size() - 1, found = 0;
+        while (low <= high) {
+            int middle = (low + high) >>> 1;
+            if (sentences.get(middle).start <= offset) { found = middle; low = middle + 1; } else high = middle - 1;
+        }
+        return found;
+    }
+    public int sectionCount() { return sectionStart.size(); }
+    public int sectionOf(int sentence) {
+        int found = java.util.Collections.binarySearch(sectionStart, sentence);
+        return found >= 0 ? found : Math.max(0, -found - 2);
+    }
+    public int sentenceOfSection(int section) {
+        if (sectionStart.isEmpty()) return 0;
+        return sectionStart.get(Math.max(0, Math.min(section, sectionStart.size() - 1)));
+    }
+    // Same as moving by paragraphs, and for the same reason: the player's rules are written once, underneath.
+    public void moveSection(int delta) {
+        if (sectionStart.isEmpty() || sentences.isEmpty()) { move(delta); return; }
+        int wanted = sectionOf(current) + delta;
+        if (wanted >= sectionStart.size()) { move(sentences.size() - 1 - current); return; }
+        move(sentenceOfSection(Math.max(0, wanted)) - current);
+    }
     public int paragraphCount() { return paragraphStart.size(); }
     public int paragraphOf(int sentence) {
         int found = java.util.Collections.binarySearch(paragraphStart, sentence);

@@ -21,7 +21,10 @@ import java.util.*;
 import java.util.concurrent.*;
 
 public class MainActivity extends Activity implements ReaderService.Listener {
-    private static final int OPEN_TEXT = 10, SAVE_TXT_PERMISSION = 12, MAX_BYTES = 5 * 1024 * 1024;
+    // The door. What passes it is judged again by what is inside: a manual of forty megabytes is mostly
+    // pictures and reads out in a minute, while a book of three can be five million words. So this only turns
+    // away what is too big to pick up at all, and DocumentText decides whether what it holds is too much.
+    private static final int OPEN_TEXT = 10, SAVE_TXT_PERMISSION = 12, MAX_BYTES = 50 * 1024 * 1024;
     // What the file picker offers. Some file managers report an FB2 or an EPUB as a plain stream of bytes, so
     // that type is offered as well and the extension of the file decides what it actually is.
     private static final String[] OPENABLE_TYPES = {"text/plain", "application/epub+zip",
@@ -35,6 +38,18 @@ public class MainActivity extends Activity implements ReaderService.Listener {
     // How much of what came before is left showing above the sentence being read. Counted in lines and
     // not in points, so the top edge always falls between two lines instead of through one.
     private static final int LINES_ABOVE_SENTENCE = 2;
+    // The reading is shown through a window onto the book rather than all at once. Android lays out every
+    // character it is given, and a book of three million of them takes seconds to lay out - once when it is
+    // opened, and again every time the screen is built, which is what made coming back from a page freeze.
+    //
+    // Thirty thousand characters on each side is about forty pages: far more than anyone scrolls through by
+    // hand, and small enough to lay out without being felt. The window is moved when the reading comes within
+    // eight thousand characters of an edge, so it moves about once every twenty-two thousand characters read
+    // - minutes apart - and never while there is still room ahead.
+    //
+    // The edges are cut at a line break, so a window never begins in the middle of a sentence.
+    private static final int WINDOW_REACH = 30_000, WINDOW_EDGE = 8_000;
+    private int windowStart, windowEnd;
     // How much taller the name of the book is drawn than it needs to be, so that what is left of the reading
     // comes out at a whole number of lines. See fitWholeLines().
     private int transitionsRunning;
@@ -61,6 +76,10 @@ public class MainActivity extends Activity implements ReaderService.Listener {
     private boolean bound, bindRequested, loading, destroyed;
     private String currentUri = "", currentName = "";
     private String pendingText;
+    // The contents of whatever is open, kept beside its text because both are read at the same moment and both
+    // are handed to the reader together. A web page, a shared passage and a plain text file declare no
+    // headings, so for them this is simply empty.
+    private java.util.List<DocumentText.Heading> loadedHeadings = java.util.Collections.emptyList();
     private final Handler seekHandler = new Handler(Looper.getMainLooper());
     private final Handler automaticResumeHandler = new Handler(Looper.getMainLooper());
     private final Handler previewHandler = new Handler(Looper.getMainLooper());
@@ -69,6 +88,7 @@ public class MainActivity extends Activity implements ReaderService.Listener {
     private boolean pausedAutomaticallyOutsideReader, automaticResumePending, resumeAfterRecreate, resumeAfterFilePickerLoad;
     private boolean showingRecent;
     private String renderedText;
+    private SpannableString rendered;
     private BackgroundColorSpan highlightSpan;
     private android.text.style.ForegroundColorSpan highlightInk;
     private Runnable subpageCloseAction, previewAction, subpageBackTarget;
@@ -97,6 +117,7 @@ public class MainActivity extends Activity implements ReaderService.Listener {
     private static class SeekRange { final int min, max; SeekRange(int min, int max) { this.min = min; this.max = max; } }
     private static class RecentDocument {
         final String uri, name, text;
+        java.util.List<DocumentText.Heading> headings = java.util.Collections.emptyList();
         // Whether it came from a plain text file already on the phone, which decides whether Save as TXT has
         // anything to offer for it.
         final boolean plainTextFile;
@@ -230,7 +251,7 @@ public class MainActivity extends Activity implements ReaderService.Listener {
     private void buildUi() {
         stopFastSeek(false);
         showingRecent = false;
-        renderedText = null; sliderValues.clear(); previewButton = null; previewAction = null; previewSpeaking = false;
+        renderedText = null; rendered = null; windowStart = windowEnd = 0; sliderValues.clear(); previewButton = null; previewAction = null; previewSpeaking = false;
         int pad = dp(16);
         LinearLayout root = new LinearLayout(this); root.setOrientation(LinearLayout.VERTICAL); root.setPadding(pad, dp(10), pad, dp(12));
         root.setOnApplyWindowInsetsListener((v, insets) -> { v.setPadding(pad, insets.getSystemWindowInsetTop() + dp(10), pad, insets.getSystemWindowInsetBottom() + dp(12)); return insets; });
@@ -330,6 +351,27 @@ public class MainActivity extends Activity implements ReaderService.Listener {
         if (scroll == null) return;
         scroll.removeCallbacks(lineFitPass); scroll.postDelayed(lineFitPass, 250);
     }
+    // Back to the start of a line, or on to the end of one, so that a window never opens in the middle of a
+    // sentence and never stops in the middle of one either.
+    //
+    // Only so far, though. A text written without a single line break in it - one long line - would otherwise
+    // hand back the whole book and leave the window no smaller than what it was meant to replace, so the
+    // search gives up after a reach of its own and settles for a space, or for the plain count.
+    private static final int CUT_REACH = 4_000;
+    private static int cutAtLine(String text, int at, boolean backwards) {
+        if (backwards) {
+            if (at <= 0) return 0;
+            int line = text.lastIndexOf('\n', at);
+            if (line >= 0 && at - line <= CUT_REACH) return line + 1;
+            int space = text.lastIndexOf(' ', at);
+            return space >= 0 && at - space <= CUT_REACH ? space + 1 : at;
+        }
+        if (at >= text.length()) return text.length();
+        int line = text.indexOf('\n', at);
+        if (line >= 0 && line - at <= CUT_REACH) return line + 1;
+        int space = text.indexOf(' ', at);
+        return space >= 0 && space - at <= CUT_REACH ? space + 1 : at;
+    }
     private void fitWholeLines() {
         if (transitionsRunning > 0 || scroll == null || body == null) return;
         if (!(scroll.getLayoutParams() instanceof LinearLayout.LayoutParams)) return;
@@ -427,19 +469,31 @@ public class MainActivity extends Activity implements ReaderService.Listener {
         int pixels = style.getDimensionPixelSize(0, 0); style.recycle();
         return pixels <= 0 ? fallbackSp : pixels / getResources().getDisplayMetrics().scaledDensity;
     }
-    private boolean byParagraph() { return "paragraph".equals(getSettings().getString("nav_unit", "sentence")); }
+    // What the player moves by. Sections are only on offer while something that declares them is open, so a
+    // book chosen for its chapters and then closed does not leave the buttons moving by a unit the next
+    // document has none of.
+    private String navUnit() {
+        String unit = getSettings().getString("nav_unit", "sentence");
+        if ("section".equals(unit) && (reader == null || !reader.hasSections())) return "sentence";
+        return unit;
+    }
+    private boolean byParagraph() { return "paragraph".equals(navUnit()); }
+    private boolean bySection() { return "section".equals(navUnit()); }
     private void stepReading(int direction, int step) {
         if (reader == null) return;
-        if (byParagraph()) reader.moveParagraph(direction * step); else reader.move(direction * step);
+        if (bySection()) reader.moveSection(direction * step);
+        else if (byParagraph()) reader.moveParagraph(direction * step);
+        else reader.move(direction * step);
     }
     // What the two buttons under the player are called follows what they now do. The rule in this app is that
     // a screen reader says what is written on a control, and on a control with no writing on it that is its
     // description.
     private void updateNavLabels() {
         if (previous == null || next == null) return;
-        boolean paragraphs = byParagraph();
-        previous.setContentDescription(getString(paragraphs ? R.string.previous_paragraph : R.string.previous_sentence));
-        next.setContentDescription(getString(paragraphs ? R.string.next_paragraph : R.string.next_sentence));
+        int back = R.string.previous_sentence, on = R.string.next_sentence;
+        if (bySection()) { back = R.string.previous_section; on = R.string.next_section; }
+        else if (byParagraph()) { back = R.string.previous_paragraph; on = R.string.next_paragraph; }
+        previous.setContentDescription(getString(back)); next.setContentDescription(getString(on));
     }
     private int listRowHeight() { return systemDimension(android.R.attr.listPreferredItemHeight, 64); }
     private int listRowSidePadding() { return systemDimension(android.R.attr.listPreferredItemPaddingLeft, 16); }
@@ -458,7 +512,11 @@ public class MainActivity extends Activity implements ReaderService.Listener {
 
     private void chooseFile() {
         pausePlaybackOutsideReader();
+        // The two flags are what make the permission worth keeping. Without them the file is readable only
+        // for as long as this task lives, takePersistableUriPermission is refused, and the book opens once
+        // from the picker and then not again from Recent files - which is exactly how it behaved.
         Intent i = new Intent(Intent.ACTION_OPEN_DOCUMENT).setType("*/*").addCategory(Intent.CATEGORY_OPENABLE)
+            .addFlags(Intent.FLAG_GRANT_READ_URI_PERMISSION | Intent.FLAG_GRANT_PERSISTABLE_URI_PERMISSION)
             .putExtra(Intent.EXTRA_MIME_TYPES, OPENABLE_TYPES);
         leavingForResult = true;
         try { startActivityForResult(i, OPEN_TEXT); } catch (ActivityNotFoundException e) { leavingForResult = false; toast(getString(R.string.open_failed)); returnToReader(); }
@@ -483,7 +541,15 @@ public class MainActivity extends Activity implements ReaderService.Listener {
         io.execute(() -> {
             try {
                 String fileName = displayFileName(uri);
-                byte[] bytes = readLimited(uri);
+                // Whatever goes wrong in getting hold of the bytes is the same thing to a reader: the file is
+                // not there to be read. A provider that has forgotten the document, a permission that was
+                // never kept, an address that no longer names anything - each throws something of its own,
+                // and reported as they came they all arrived as "unsupported content", which explained
+                // nothing and pointed at the format.
+                byte[] bytes;
+                try { bytes = readLimited(uri); }
+                catch (Unreadable e) { throw e; }
+                catch (Exception e) { throw new Unreadable(getString(R.string.file_unavailable)); }
                 // The name first, because it is cheap and usually right. When it settles nothing - a
                 // manager that hands over a nameless stream - the bytes themselves are asked.
                 String kind = DocumentText.kindOf(fileName);
@@ -498,16 +564,30 @@ public class MainActivity extends Activity implements ReaderService.Listener {
                 boolean plain = "txt".equals(kind) && !wrapped;
                 // A plain text file is guessed at, because nothing in it says how it was written. The other
                 // three say so themselves, so they are simply read.
-                String loaded = ("txt".equals(kind) ? decode(bytes) : DocumentText.extract(kind, bytes, getString(R.string.footnote_prefix)))
+                DocumentText.Content content = "txt".equals(kind)
+                    ? new DocumentText.Content(decode(bytes), java.util.Collections.<DocumentText.Heading>emptyList())
+                    : DocumentText.read(kind, bytes, getString(R.string.footnote_prefix));
+                String loaded = content.text
                     .replace("\r\n", "\n").replace('\r', '\n');
+                // The line endings are evened out after the reading, so a document that carried any would have
+                // moved every heading that follows it. None of the three formats writes one, but a contents
+                // that cannot be trusted is worse than none.
+                final java.util.List<DocumentText.Heading> headings =
+                    loaded.length() == content.text.length() ? content.headings : java.util.Collections.<DocumentText.Heading>emptyList();
+                if (loaded.length() > DocumentText.MAX_TEXT) throw new Unreadable(getString(R.string.document_too_long));
                 if (loaded.trim().isEmpty()) throw new Unreadable(getString(R.string.file_empty));
                 String name = DocumentText.titleOf(kind, bytes, withoutExtension(fileName)); runOnUiThread(() -> {
-                    if (destroyed) return; loadedText = loaded; fromPlainTextFile = plain; fromWeb = false; fromWebPage = false; currentUri = uri.toString(); currentName = name; title.setText(name); title.setVisibility(View.VISIBLE); title.setPadding(0, 0, 0, dp(8)); loading = false;
+                    if (destroyed) return; loadedText = loaded; loadedHeadings = headings; fromPlainTextFile = plain; fromWeb = false; fromWebPage = false; currentUri = uri.toString(); currentName = name; title.setText(name); title.setVisibility(View.VISIBLE); title.setPadding(0, 0, 0, dp(8)); loading = false;
                     if (remember) documents().edit().putString("last_uri", currentUri).apply();
                     forgetCachedPage();
                     addRecent(DOCUMENTS_LIST, currentUri, currentName); if (reader == null) pendingText = loaded; else finishLoad(loaded);
                 });
-            } catch (Exception e) { runOnUiThread(() -> { markReady(); loading = false; status.setText(R.string.open_failed); toast(e instanceof Unreadable ? e.getMessage() : getString(R.string.unsupported_content)); updateControls(); if (resumeAfterFilePickerLoad) { resumeAfterFilePickerLoad = false; scheduleAutomaticPlayback(); } }); }
+            // Running out of memory is an Error and not an Exception, so it would pass a plain catch by and
+            // take the app down with it. A document too big to hold is a thing to be told about, not a crash.
+            } catch (Exception | OutOfMemoryError e) { runOnUiThread(() -> { markReady(); loading = false; status.setText(R.string.open_failed); toast(e instanceof Unreadable ? e.getMessage()
+                        : e instanceof DocumentText.TooLong || e instanceof OutOfMemoryError ? getString(R.string.document_too_long)
+                        : e instanceof SecurityException ? getString(R.string.file_unavailable)
+                        : getString(R.string.unsupported_content)); updateControls(); if (resumeAfterFilePickerLoad) { resumeAfterFilePickerLoad = false; scheduleAutomaticPlayback(); } }); }
         });
     }
     private void finishLoad(String loaded) {
@@ -517,7 +597,8 @@ public class MainActivity extends Activity implements ReaderService.Listener {
         boolean fromStart = fromWeb && !restoringPage && getSettings().getBoolean("web_from_start", true);
         restoringPage = false;
         int position = fromStart ? 0 : reader.savedPosition(currentUri);
-        reader.load(currentUri, currentName, loaded, position, fromWeb);
+        contentsOpen.clear(); contentsShown.clear(); contentsChosen = -1;
+        reader.load(currentUri, currentName, loaded, position, fromWeb, loadedHeadings);
         if (resumeAfterFilePickerLoad) { resumeAfterFilePickerLoad = false; scheduleAutomaticPlayback(); }
         markReady();
     }
@@ -558,7 +639,7 @@ public class MainActivity extends Activity implements ReaderService.Listener {
     private void showArticle(ArticleReader.Result article, boolean startReading) {
         // Remembered under Web pages, by its address. It is not remembered as the file to open next time and
         // it is not a file at all until Save as TXT in More makes it one.
-        loadedText = article.text; fromPlainTextFile = false; fromWeb = true; fromWebPage = true;
+        loadedText = article.text; loadedHeadings = java.util.Collections.emptyList(); fromPlainTextFile = false; fromWeb = true; fromWebPage = true;
         currentUri = article.url; currentName = article.title.isEmpty() ? getString(R.string.web_page) : article.title;
         title.setText(currentName); title.setVisibility(View.VISIBLE); title.setPadding(0, 0, 0, dp(8)); loading = false;
         addRecent(PAGES_LIST, currentUri, currentName);
@@ -569,7 +650,7 @@ public class MainActivity extends Activity implements ReaderService.Listener {
     }
     private void articleFailed(String previousUri, String previousName, String previousText, boolean previousPlain, boolean previousWeb, boolean previousPage) {
         loading = false; resumeAfterFilePickerLoad = false;
-        currentUri = previousUri; currentName = previousName; loadedText = previousText;
+        currentUri = previousUri; currentName = previousName; loadedText = previousText; loadedHeadings = java.util.Collections.emptyList();
         fromPlainTextFile = previousPlain; fromWeb = previousWeb; fromWebPage = previousPage;
         title.setText(currentName); title.setVisibility(currentName.isEmpty() ? View.GONE : View.VISIBLE);
         title.setPadding(0, 0, 0, currentName.isEmpty() ? 0 : dp(8));
@@ -579,7 +660,7 @@ public class MainActivity extends Activity implements ReaderService.Listener {
     // fetch and nothing to strip; it is read as it arrived, and Save as TXT keeps it if it is worth keeping.
     private void showSharedText(String shared) { showSharedText(shared, getString(R.string.shared_text), "shared:"); }
     private void showSharedText(String shared, String name, String kind) {
-        loadedText = shared; fromPlainTextFile = false; fromWeb = true; fromWebPage = false;
+        loadedText = shared; loadedHeadings = java.util.Collections.emptyList(); fromPlainTextFile = false; fromWeb = true; fromWebPage = false;
         currentUri = kind + Integer.toHexString(shared.hashCode()); currentName = name;
         title.setText(currentName); title.setVisibility(View.VISIBLE); title.setPadding(0, 0, 0, dp(8)); loading = false;
         rememberPage(shared, false);
@@ -709,35 +790,49 @@ public class MainActivity extends Activity implements ReaderService.Listener {
     private void showCurrent(int index, int count) {
         if (reader == null || reader.getText().isEmpty()) return;
         String document = reader.getText();
-        if (count == 0) { renderedText = null; body.setText(document); body.setContentDescription(getString(R.string.no_text)); status.setText(R.string.no_text); return; }
+        if (count == 0) { renderedText = null; rendered = null; windowStart = windowEnd = 0; body.setText(document); body.setContentDescription(getString(R.string.no_text)); status.setText(R.string.no_text); return; }
         ReaderService.Range r = reader.currentRange();
-        // The document text is handed to the TextView once; every following sentence only moves the
-        // highlight span. Re-creating a SpannableString of the whole book per sentence is what made
-        // large files stutter.
-        if (document != renderedText || !(body.getText() instanceof Spannable)) {
-            renderedText = document; highlightSpan = new BackgroundColorSpan(appColor(R.color.highlight));
+        // The window still holds the sentence, and with room to spare on whichever side the book continues.
+        boolean sameBook = document == renderedText && rendered != null;
+        boolean roomAhead = windowEnd >= document.length() || windowEnd - r.end >= WINDOW_EDGE;
+        boolean roomBehind = windowStart <= 0 || r.start - windowStart >= WINDOW_EDGE;
+        boolean moved = !(sameBook && r.start >= windowStart && r.end <= windowEnd && roomAhead && roomBehind);
+        if (moved) {
+            windowStart = cutAtLine(document, Math.max(0, r.start - WINDOW_REACH), true);
+            windowEnd = cutAtLine(document, Math.min(document.length(), r.end + WINDOW_REACH), false);
+            renderedText = document;
+            rendered = new SpannableString(document.substring(windowStart, windowEnd));
+            highlightSpan = new BackgroundColorSpan(appColor(R.color.highlight));
             // Yellow in both themes, because that is what a highlighter is, and against a black page it is
             // the most visible thing on the screen. White lettering on yellow would be unreadable, so the
             // marked sentence is written in black wherever it appears - ink on a paper page.
             highlightInk = new android.text.style.ForegroundColorSpan(Color.BLACK);
-            body.setText(new SpannableString(document), TextView.BufferType.SPANNABLE);
-        }
+            body.setText(rendered, TextView.BufferType.SPANNABLE);
+        // The window is right but the view is new: coming back from a page builds the screen again, and the
+        // marked-up copy is handed to it as it stands rather than made a second time.
+        } else if (!(body.getText() instanceof Spannable)) body.setText(rendered, TextView.BufferType.SPANNABLE);
+        final int from = r.start - windowStart, to = r.end - windowStart;
         Spannable marked = (Spannable)body.getText();
         marked.removeSpan(highlightSpan); marked.removeSpan(highlightInk);
-        marked.setSpan(highlightSpan, r.start, r.end, Spannable.SPAN_EXCLUSIVE_EXCLUSIVE);
-        marked.setSpan(highlightInk, r.start, r.end, Spannable.SPAN_EXCLUSIVE_EXCLUSIVE);
+        marked.setSpan(highlightSpan, from, to, Spannable.SPAN_EXCLUSIVE_EXCLUSIVE);
+        marked.setSpan(highlightInk, from, to, Spannable.SPAN_EXCLUSIVE_EXCLUSIVE);
         body.setContentDescription(document.substring(r.start, r.end).trim());
-        if (byParagraph() && reader != null && reader.paragraphCount() > 0)
+        if (bySection() && reader != null && reader.sectionCount() > 0)
+            status.setText(getString(R.string.section_count, reader.sectionOf(index) + 1, reader.sectionCount()));
+        else if (byParagraph() && reader != null && reader.paragraphCount() > 0)
             status.setText(getString(R.string.paragraph_count, reader.paragraphOf(index) + 1, reader.paragraphCount()));
         else status.setText(getString(R.string.sentence_count, index + 1, count));
         int percent = count <= 1 ? 0 : Math.round(index * 100f / (count - 1));
         updatingBookProgress = true; bookProgress.setProgress(percent); updatingBookProgress = false; updateBookProgressDescription(percent);
         updateDurationLabel();
+        final boolean jump = moved;
         body.post(() -> {
             android.text.Layout l = body.getLayout(); if (l == null) return;
-            int line = Math.max(0, l.getLineForOffset(r.start) - LINES_ABOVE_SENTENCE);
+            int line = Math.max(0, l.getLineForOffset(from) - LINES_ABOVE_SENTENCE);
             int top = Math.max(0, body.getPaddingTop() + l.getLineTop(line));
-            if (readyToShow) scroll.smoothScrollTo(0, top); else scroll.scrollTo(0, top);
+            // A window that has just moved is a different page of the book, so it is put in place rather than
+            // slid to: gliding across text that was not there a moment ago is not a movement of anything.
+            if (readyToShow && !jump) scroll.smoothScrollTo(0, top); else scroll.scrollTo(0, top);
         });
     }
     // Kept awake only while the reading is actually running and the reader itself is on the screen, and only
@@ -809,6 +904,7 @@ public class MainActivity extends Activity implements ReaderService.Listener {
     // different journeys.
     private int fastSeekStep() {
         android.content.SharedPreferences p = getSettings();
+        if (bySection()) return 1;
         return byParagraph() ? p.getInt("paragraph_step", 2) : p.getInt("sentence_step", 5);
     }
     private void attachSeekButton(ImageButton button, int direction) {
@@ -868,41 +964,47 @@ public class MainActivity extends Activity implements ReaderService.Listener {
     // the buttons are stepping through paragraphs told the listener about a unit they had not chosen.
     private void announceCurrentSentence() {
         if (reader == null || reader.getCount() == 0) return;
-        boolean paragraphs = byParagraph() && reader.paragraphCount() > 0;
-        status.announceForAccessibility(paragraphs
-            ? getString(R.string.paragraph_position, reader.paragraphOf(reader.getCurrent()) + 1)
-            : getString(R.string.sentence_position, reader.getCurrent() + 1));
+        if (bySection() && reader.sectionCount() > 0)
+            status.announceForAccessibility(getString(R.string.section_position, reader.sectionOf(reader.getCurrent()) + 1));
+        else if (byParagraph() && reader.paragraphCount() > 0)
+            status.announceForAccessibility(getString(R.string.paragraph_position, reader.paragraphOf(reader.getCurrent()) + 1));
+        else status.announceForAccessibility(getString(R.string.sentence_position, reader.getCurrent() + 1));
     }
 
     private void showNavigationDialog() {
         if (reader == null || reader.getCount() == 0) return;
         pausePlaybackOutsideReader();
         final boolean[] applied = {false};
-        final boolean[] paragraphs = {byParagraph()};
+        final String[] unit = {navUnit()};
+        final boolean sectioned = reader.hasSections() && reader.sectionCount() > 0;
         LinearLayout content = new LinearLayout(this); content.setOrientation(LinearLayout.VERTICAL);
         content.setPadding(dialogPadding(), dp(16), dialogPadding(), dp(16));
         TextView heading = label(getString(R.string.navigation), 24, true);
         if (Build.VERSION.SDK_INT >= 28) heading.setAccessibilityHeading(true);
         content.addView(heading);
         RadioGroup units = new RadioGroup(this);
-        RadioButton bySentence = new RadioButton(this), byParagraphs = new RadioButton(this);
-        bySentence.setText(R.string.nav_sentences); byParagraphs.setText(R.string.nav_paragraphs);
-        bySentence.setTextSize(uiSize(labelTextSize())); byParagraphs.setTextSize(uiSize(labelTextSize()));
-        final int sentenceId = View.generateViewId(), paragraphId = View.generateViewId();
-        bySentence.setId(sentenceId); byParagraphs.setId(paragraphId);
+        RadioButton bySentence = new RadioButton(this), byParagraphs = new RadioButton(this), bySections = new RadioButton(this);
+        bySentence.setText(R.string.nav_sentences); byParagraphs.setText(R.string.nav_paragraphs); bySections.setText(R.string.nav_sections);
+        bySentence.setTextSize(uiSize(labelTextSize())); byParagraphs.setTextSize(uiSize(labelTextSize())); bySections.setTextSize(uiSize(labelTextSize()));
+        final int sentenceId = View.generateViewId(), paragraphId = View.generateViewId(), sectionId = View.generateViewId();
+        bySentence.setId(sentenceId); byParagraphs.setId(paragraphId); bySections.setId(sectionId);
         units.addView(bySentence, new RadioGroup.LayoutParams(-1, -2)); units.addView(byParagraphs, new RadioGroup.LayoutParams(-1, -2));
-        units.check(paragraphs[0] ? paragraphId : sentenceId);
+        if (sectioned) units.addView(bySections, new RadioGroup.LayoutParams(-1, -2));
+        units.check("section".equals(unit[0]) && sectioned ? sectionId : "paragraph".equals(unit[0]) ? paragraphId : sentenceId);
         content.addView(units, field(dp(16)));
         EditText input = new EditText(this); input.setInputType(android.text.InputType.TYPE_CLASS_NUMBER);
         input.setTextSize(uiSize(20)); input.setPadding(dialogPadding(), dp(12), dialogPadding(), dp(12));
         content.addView(input, field(dp(16)));
         Runnable describe = () -> {
-            String hint = getString(paragraphs[0] ? R.string.go_to_paragraph_hint : R.string.go_to_sentence_hint,
-                paragraphs[0] ? reader.paragraphCount() : reader.getCount());
+            String hint = "section".equals(unit[0]) ? getString(R.string.go_to_section_hint, reader.sectionCount())
+                : "paragraph".equals(unit[0]) ? getString(R.string.go_to_paragraph_hint, reader.paragraphCount())
+                : getString(R.string.go_to_sentence_hint, reader.getCount());
             input.setHint(hint); input.setContentDescription(hint);
         };
         describe.run();
-        units.setOnCheckedChangeListener((group, id) -> { paragraphs[0] = id == paragraphId; describe.run(); });
+        units.setOnCheckedChangeListener((group, id) -> {
+            unit[0] = id == sectionId ? "section" : id == paragraphId ? "paragraph" : "sentence"; describe.run();
+        });
         AlertDialog dialog = new AlertDialog.Builder(this).setView(content).setNegativeButton(R.string.close, null)
             .setPositiveButton(R.string.apply, null).create();
         dialog.setOnDismissListener(d -> { if (!applied[0]) returnToReader(); });
@@ -910,21 +1012,172 @@ public class MainActivity extends Activity implements ReaderService.Listener {
         // The unit is kept the moment Apply is pressed, whether or not a number was typed: choosing what to
         // move by is a decision of its own, and most of the time it is the only one being made here.
         dialog.getButton(AlertDialog.BUTTON_POSITIVE).setOnClickListener(v -> {
-            getSettings().edit().putString("nav_unit", paragraphs[0] ? "paragraph" : "sentence").apply();
+            getSettings().edit().putString("nav_unit", unit[0]).apply();
             updateNavLabels();
-            int total = paragraphs[0] ? reader.paragraphCount() : reader.getCount();
+            int total = "section".equals(unit[0]) ? reader.sectionCount()
+                : "paragraph".equals(unit[0]) ? reader.paragraphCount() : reader.getCount();
             String typed = input.getText().toString().trim();
             if (!typed.isEmpty()) {
                 int number;
                 try { number = Integer.parseInt(typed); } catch (NumberFormatException e) { number = -1; }
                 if (number < 1 || number > total) { toast(getString(R.string.invalid_sentence, total)); return; }
                 applied[0] = true;
-                jumpFromList(paragraphs[0] ? reader.sentenceOfParagraph(number - 1) : number - 1);
+                jumpFromList("section".equals(unit[0]) ? reader.sentenceOfSection(number - 1)
+                    : "paragraph".equals(unit[0]) ? reader.sentenceOfParagraph(number - 1) : number - 1);
             }
             if (reader != null) showCurrent(reader.getCurrent(), reader.getCount());
             dialog.dismiss();
         });
         focusHeading(heading);
+    }
+
+    // What a book calls its own parts, shown the way it writes them: a chapter inside a part, a scene inside a
+    // chapter. Nothing here is guessed at - it is read out of the FB2 sections, the EPUB's own table or the
+    // level a Word style declares - and a document that declares no shape is not offered the row at all.
+    //
+    // A page rather than a dialog, the same as Bookmarks: a table of contents runs to a hundred entries and
+    // more, and a page scrolls as a page instead of as a list squeezed into a box. Read at the bottom stands
+    // where Apply stands everywhere else and means the same thing - carry out what was chosen here.
+    //
+    // Everything starts closed. A novel names a hundred and thirty parts, and a hundred and thirty rows opened
+    // flat is a wall to walk through with a screen reader; a part opens on being pressed and closes on being
+    // pressed again. That same press is also the choice, so getting to a chapter and reading from it is a walk
+    // down the tree and then Read, with nothing to pick out separately.
+    //
+    // The page is built once and then only added to and taken from. Building it again on every press was what
+    // made the screen blink and the reader lose the row it was standing on: the row it was standing on had
+    // been thrown away and replaced by a new one that looked the same.
+    private final java.util.Set<Integer> contentsOpen = new java.util.HashSet<>();
+    private final java.util.List<Integer> contentsShown = new ArrayList<>();
+    private int contentsChosen = -1;
+    private void showContents() {
+        if (reader == null || !reader.hasSections()) { returnToReader(); return; }
+        final java.util.List<ReaderService.Section> entries = new ArrayList<>(reader.sections());
+        if (contentsChosen < 0 || contentsChosen >= entries.size()) contentsChosen = 0;
+        // Opened on the part being read, with everything above it opened up to it, so that a book somebody is
+        // halfway through does not offer its first chapter as the answer. Where a part, its first chapter and
+        // that chapter's first scene all begin at the same word, the part is the one chosen: choosing the
+        // scene would open the whole way down to it before the reader had asked for anything.
+        int at = 0;
+        for (int i = 0; i < entries.size(); i++) if (entries.get(i).sentence <= reader.getCurrent()) at = i;
+        while (at > 0 && entries.get(at - 1).sentence == entries.get(at).sentence) at--;
+        contentsChosen = at;
+        contentsOpen.clear();
+        for (int i = at, level = entries.get(at).level; i >= 0; i--)
+            if (entries.get(i).level < level) { contentsOpen.add(i); level = entries.get(i).level; }
+
+        LinearLayout box = listPage();
+        contentsShown.clear();
+        for (int i = 0; i < entries.size(); i++) {
+            if (!contentsVisible(entries, i)) continue;
+            View row = contentsRowFor(entries, i, box);
+            contentsShown.add(i);
+            box.addView(row, new LinearLayout.LayoutParams(-1, -2));
+            if (i == contentsChosen) listFocusTarget = row;
+        }
+        box.setAccessibilityDelegate(new View.AccessibilityDelegate() {
+            @Override public void onInitializeAccessibilityNodeInfo(View host, android.view.accessibility.AccessibilityNodeInfo info) {
+                super.onInitializeAccessibilityNodeInfo(host, info);
+                info.setCollectionInfo(android.view.accessibility.AccessibilityNodeInfo.CollectionInfo.obtain(((ViewGroup)host).getChildCount(), 1, false));
+            }
+        });
+        showSettingsPage(R.string.contents, box, null, () -> {
+            if (contentsChosen >= 0 && contentsChosen < entries.size()) jumpFromList(entries.get(contentsChosen).sentence);
+            else returnToReader();
+        }, null, null, R.string.read_here);
+    }
+    private Button contentsRowFor(java.util.List<ReaderService.Section> entries, final int index, LinearLayout box) {
+        ReaderService.Section section = entries.get(index);
+        boolean parent = contentsHasChildren(entries, index);
+        Button row = listRowButton(section.title, labelTextSize());
+        row.setPadding(listRowSidePadding() + section.level * dp(16), dp(8), listRowSidePadding(), dp(8));
+        row.setMinimumHeight(menuRowHeight());
+        dressContentsRow(row, entries, index, box);
+        row.setOnClickListener(v -> {
+            int wasChosen = contentsChosen;
+            contentsChosen = index;
+            if (wasChosen != index) {
+                int place = contentsShown.indexOf(wasChosen);
+                if (place >= 0) dressContentsRow((Button)box.getChildAt(place), entries, wasChosen, box);
+            }
+            if (contentsHasChildren(entries, index)) {
+                if (contentsOpen.remove(index)) closeContentsUnder(entries, index, box);
+                else { contentsOpen.add(index); openContentsUnder(entries, index, box); }
+            }
+            dressContentsRow((Button)v, entries, index, box);
+        });
+        return row;
+    }
+    // Everything about a row that can change while the page stands: what it says, whether it is the chosen
+    // one, and whether it is open. The triangle is for the eye and is left out of what is read aloud - the
+    // screen reader is told the same thing the way the platform provides for it, as a state and as an action,
+    // and never as a word added to the title.
+    private void dressContentsRow(Button row, java.util.List<ReaderService.Section> entries, final int index, LinearLayout box) {
+        if (row == null) return;
+        ReaderService.Section section = entries.get(index);
+        final boolean parent = contentsHasChildren(entries, index), open = contentsOpen.contains(index);
+        row.setText((parent ? (open ? "\u25be  " : "\u25b8  ") : "") + section.title);
+        row.setContentDescription(section.title);
+        boolean here = index == contentsChosen;
+        row.setSelected(here);
+        row.setTypeface(null, here ? android.graphics.Typeface.BOLD : android.graphics.Typeface.NORMAL);
+        if (Build.VERSION.SDK_INT >= 30)
+            row.setStateDescription(parent ? getString(open ? R.string.expanded : R.string.collapsed) : null);
+        row.setAccessibilityDelegate(new View.AccessibilityDelegate() {
+            @Override public void onInitializeAccessibilityNodeInfo(View host, android.view.accessibility.AccessibilityNodeInfo info) {
+                super.onInitializeAccessibilityNodeInfo(host, info);
+                // Asked for at the moment it is wanted rather than written down, because rows come and go
+                // above this one and a number kept from build time would soon be somebody else's.
+                info.setCollectionItemInfo(android.view.accessibility.AccessibilityNodeInfo.CollectionItemInfo.obtain(box.indexOfChild(host), 1, 0, 1, false));
+                if (parent) info.addAction(open
+                    ? android.view.accessibility.AccessibilityNodeInfo.AccessibilityAction.ACTION_COLLAPSE
+                    : android.view.accessibility.AccessibilityNodeInfo.AccessibilityAction.ACTION_EXPAND);
+            }
+            // Pressing a row that opens does two things at once, and each announced itself, so three sayings
+            // arrived on top of one another; there, only the opening is worth hearing. A row that opens
+            // nothing has only the one thing to say, and says it in the platform's own words. The triangle is
+            // drawn for the eye, so its changing is never read out either way.
+            @Override public void sendAccessibilityEvent(View host, int eventType) {
+                if (eventType == android.view.accessibility.AccessibilityEvent.TYPE_VIEW_TEXT_CHANGED) return;
+                if (parent && eventType == android.view.accessibility.AccessibilityEvent.TYPE_VIEW_SELECTED) return;
+                super.sendAccessibilityEvent(host, eventType);
+            }
+        });
+    }
+    // Opening adds the rows that have become visible directly under this one; closing takes away every row
+    // that sits inside it. Nothing else on the page is touched, so the row under the reader stays where it is.
+    private void openContentsUnder(java.util.List<ReaderService.Section> entries, int index, LinearLayout box) {
+        int place = contentsShown.indexOf(index);
+        if (place < 0) return;
+        int level = entries.get(index).level, put = place + 1;
+        for (int i = index + 1; i < entries.size() && entries.get(i).level > level; i++) {
+            if (!contentsVisible(entries, i)) continue;
+            box.addView(contentsRowFor(entries, i, box), put, new LinearLayout.LayoutParams(-1, -2));
+            contentsShown.add(put, i);
+            put++;
+        }
+    }
+    private void closeContentsUnder(java.util.List<ReaderService.Section> entries, int index, LinearLayout box) {
+        int level = entries.get(index).level;
+        for (int i = index + 1; i < entries.size() && entries.get(i).level > level; i++) {
+            int place = contentsShown.indexOf(i);
+            if (place < 0) continue;
+            box.removeViewAt(place);
+            contentsShown.remove(place);
+        }
+    }
+    // A row is shown when everything it sits inside is open. Nothing is stored about which rows are showing:
+    // the tree is small and the answer is a walk back up it, which cannot fall out of step with the tree.
+    private boolean contentsVisible(java.util.List<ReaderService.Section> entries, int index) {
+        int level = entries.get(index).level;
+        for (int i = index - 1; i >= 0; i--) {
+            if (entries.get(i).level >= level) continue;
+            return contentsOpen.contains(i) && contentsVisible(entries, i);
+        }
+        return true;
+    }
+    private boolean contentsHasChildren(java.util.List<ReaderService.Section> entries, int index) {
+        return index + 1 < entries.size() && entries.get(index + 1).level > entries.get(index).level;
     }
     private void goToStart() {
         if (reader == null || reader.getCount() == 0) { returnToReader(); return; }
@@ -1021,7 +1274,7 @@ public class MainActivity extends Activity implements ReaderService.Listener {
         boolean open = reader != null && reader.getCount() > 0;
         names.add(getString(R.string.open_url)); actions.add(this::showOpenUrlDialog);
         names.add(getString(R.string.read_clipboard)); actions.add(this::readClipboard);
-        // Contents belongs here, offered only for a book that declares one.
+        if (open && reader.hasSections()) { names.add(getString(R.string.contents)); actions.add(this::showContents); }
         if (open) { names.add(getString(R.string.search)); actions.add(this::showSearchDialog); }
         if (open && !fromWeb) { names.add(getString(R.string.bookmarks)); actions.add(this::showBookmarks); }
         if (open) { names.add(getString(R.string.go_to_start)); actions.add(this::goToStart); }
@@ -1694,7 +1947,10 @@ public class MainActivity extends Activity implements ReaderService.Listener {
         ScrollView timerScroll = new ScrollView(this); timerScroll.addView(box);
         final boolean[] applied = {false};
         AlertDialog dialog = new AlertDialog.Builder(this).setTitle(R.string.sleep_timer).setView(timerScroll).setNegativeButton(R.string.close, null).setPositiveButton(R.string.apply, null).create();
-        dialog.setOnDismissListener(d -> { if (!applied[0]) returnToReader(); }); dialog.show();
+        // Whether or not a timer was set, the reading that was stopped to open this goes back to what it
+        // was doing. Setting a timer says when to stop, not that the reading was no longer wanted - and
+        // returnToReader only resumes what this app paused itself, so a book stopped by hand stays stopped.
+        dialog.setOnDismissListener(d -> returnToReader()); dialog.show();
         // A ready-made value is the whole decision by itself: one tap starts the timer and the dialog closes.
         // Only the custom one is still being set while it is being touched, so it alone keeps Apply, and Apply
         // is shown only while it is chosen. The number stands at the end of the Custom row, so there is no
@@ -1939,6 +2195,9 @@ public class MainActivity extends Activity implements ReaderService.Listener {
         showSettingsPage(headingResource, content, bottomExtra, applyAction, closeAction, null);
     }
     private void showSettingsPage(int headingResource, View content, View bottomExtra, Runnable applyAction, Runnable closeAction, View tabs) {
+        showSettingsPage(headingResource, content, bottomExtra, applyAction, closeAction, tabs, R.string.apply);
+    }
+    private void showSettingsPage(int headingResource, View content, View bottomExtra, Runnable applyAction, Runnable closeAction, View tabs, int applyLabel) {
         setTitle(getString(headingResource));
         showingRecent = true; subpageCloseAction = closeAction; int pad = dp(16);
         LinearLayout page = new LinearLayout(this); page.setOrientation(LinearLayout.VERTICAL); page.setPadding(pad, dp(10), pad, dp(16)); page.setBackgroundColor(appColor(R.color.window_bg));
@@ -1951,7 +2210,7 @@ public class MainActivity extends Activity implements ReaderService.Listener {
         ScrollView scrolling = new ScrollView(this); scrolling.addView(content); page.addView(scrolling, new LinearLayout.LayoutParams(-1, 0, 1));
         if (bottomExtra != null) { LinearLayout.LayoutParams extraRow = new LinearLayout.LayoutParams(-1, -2); extraRow.setMargins(0, dp(16), 0, 0); page.addView(bottomExtra, extraRow); }
         // A page that only lists things has nothing to apply; Back is the only way out of it.
-        if (applyAction != null) { Button apply = button(getString(R.string.apply)); apply.setOnClickListener(v -> applyAction.run()); LinearLayout.LayoutParams applyRow = new LinearLayout.LayoutParams(-1, -2); applyRow.setMargins(0, bottomExtra != null ? 0 : dp(16), 0, 0); page.addView(apply, applyRow); }
+        if (applyAction != null) { Button apply = button(getString(applyLabel)); apply.setOnClickListener(v -> applyAction.run()); LinearLayout.LayoutParams applyRow = new LinearLayout.LayoutParams(-1, -2); applyRow.setMargins(0, bottomExtra != null ? 0 : dp(16), 0, 0); page.addView(apply, applyRow); }
         appRoot = page; setContentView(page); page.requestApplyInsets(); focusAfterBuild(heading);
     }
     // "Remove the book" is taken at its word: the row goes, and with it everything the app knew about that
@@ -1967,6 +2226,10 @@ public class MainActivity extends Activity implements ReaderService.Listener {
         showRecent();
     }
     private void forgetBook(String itemUri) {
+        // The permission to open it goes with everything else the app knew about it. Android keeps only so
+        // many of these, and one held for a book that was removed years ago is one fewer for a book still read.
+        try { getContentResolver().releasePersistableUriPermission(Uri.parse(itemUri), Intent.FLAG_GRANT_READ_URI_PERMISSION); }
+        catch (Exception ignored) {}
         if (itemUri.equals(currentUri)) clearCurrentDocument();
         if (itemUri.equals(documents().getString("last_uri", ""))) documents().edit().remove("last_uri").apply();
         if (itemUri.equals(documents().getString("last_page_uri", ""))) forgetCachedPage();
@@ -2007,7 +2270,7 @@ public class MainActivity extends Activity implements ReaderService.Listener {
                 loading = false;
                 if (selected == null) clearCurrentDocument();
                 else if (!selected.uri.equals(currentUri)) {
-                    loadedText = selected.text; fromPlainTextFile = selected.plainTextFile; fromWeb = false; fromWebPage = false;
+                    loadedText = selected.text; loadedHeadings = selected.headings; fromPlainTextFile = selected.plainTextFile; fromWeb = false; fromWebPage = false;
                     currentUri = selected.uri; currentName = selected.name;
                     documents().edit().putString("last_uri", currentUri).apply();
                     forgetCachedPage();
@@ -2046,11 +2309,16 @@ public class MainActivity extends Activity implements ReaderService.Listener {
                 fileName = inner.name; kind = inner.kind; bytes = inner.bytes;
             }
             boolean plain = "txt".equals(kind) && !wrapped;
-            String loaded = ("txt".equals(kind) ? decode(bytes) : DocumentText.extract(kind, bytes, getString(R.string.footnote_prefix))).replace("\r\n", "\n").replace('\r', '\n');
-            if (loaded.trim().isEmpty()) return null;
+            DocumentText.Content content = "txt".equals(kind)
+                ? new DocumentText.Content(decode(bytes), java.util.Collections.<DocumentText.Heading>emptyList())
+                : DocumentText.read(kind, bytes, getString(R.string.footnote_prefix));
+            String loaded = content.text.replace("\r\n", "\n").replace('\r', '\n');
+            if (loaded.trim().isEmpty() || loaded.length() > DocumentText.MAX_TEXT) return null;
             String savedName = item.optString("name");
-            return new RecentDocument(uriValue, savedName.isEmpty() ? withoutExtension(fileName) : savedName, loaded, plain);
-        } catch (Exception ignored) { return null; }
+            RecentDocument document = new RecentDocument(uriValue, savedName.isEmpty() ? withoutExtension(fileName) : savedName, loaded, plain);
+            if (loaded.length() == content.text.length()) document.headings = content.headings;
+            return document;
+        } catch (Exception | OutOfMemoryError ignored) { return null; }
     }
     // What was being read when a web page or a shared passage was open. Neither is a file on the phone, so
     // neither survives the app being killed the way a book does - the book is still on the storage and is
@@ -2082,7 +2350,7 @@ public class MainActivity extends Activity implements ReaderService.Listener {
         if (!"page".equals(documents().getString(LAST_KIND, ""))) return false;
         String text = readCachedPage();
         if (text == null || text.trim().isEmpty()) { forgetCachedPage(); return false; }
-        loadedText = text; fromPlainTextFile = false; fromWeb = true;
+        loadedText = text; loadedHeadings = java.util.Collections.emptyList(); fromPlainTextFile = false; fromWeb = true;
         fromWebPage = documents().getBoolean("last_page_web", true);
         currentUri = documents().getString("last_page_uri", "");
         currentName = documents().getString("last_page_title", getString(R.string.web_page));
@@ -2099,7 +2367,7 @@ public class MainActivity extends Activity implements ReaderService.Listener {
         } catch (Exception e) { return null; }
     }
     private void clearCurrentDocument() {
-        cancelAutomaticResume(true); resumeAfterFilePickerLoad = false; pendingText = null; loadedText = null; fromPlainTextFile = false; fromWeb = false; fromWebPage = false; currentUri = ""; currentName = "";
+        cancelAutomaticResume(true); resumeAfterFilePickerLoad = false; pendingText = null; loadedText = null; loadedHeadings = java.util.Collections.emptyList(); fromPlainTextFile = false; fromWeb = false; fromWebPage = false; currentUri = ""; currentName = "";
         documents().edit().remove("last_uri").apply();
         forgetCachedPage();
         if (reader != null) reader.clearDocument();
