@@ -14,7 +14,7 @@
 
 ### Changed
 
-1. Options is now Settings, with three separate categories: General, Reading and Seeking. Each opens on its own page. Apply and Back return to the Settings list instead of the reading screen, while language and theme changes take effect immediately.
+1. Options is now Settings, with three separate categories: General, Reading and Seeking. Each opens on its own page, and every setting on them takes effect immediately, so there is no Apply button and nothing to confirm. Back returns to the Settings list instead of the reading screen. Voice options keep their Apply button, so a voice can be heard with Test the voice and set for documents and for web pages before anything changes.
 2. Open TXT has been renamed to Open file to reflect support for TXT, FB2, EPUB, DOCX and ZIP files.
 3. Pause playback outside reader has been renamed to Pause reading when another screen opens, while Voice settings is now Voice options.
 4. Fast seek interval is now Fast seek speed. Separate settings have also been added for how many sentences or paragraphs are covered by each step during fast seeking.

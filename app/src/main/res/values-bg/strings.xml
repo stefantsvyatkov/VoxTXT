@@ -107,8 +107,8 @@
     <string name="speech_engine">Синтезатор на реч</string>
     <string name="voice">Глас</string>
     <string name="numbered_voice">Глас %1$d</string>
-    <string name="preview_voice">Проба на гласа</string>
-    <string name="stop_preview">Спиране на пробата</string>
+    <string name="preview_voice">Тест на гласа</string>
+    <string name="stop_preview">Спиране на теста</string>
     <string name="voice_preview_sample">Така звучи избраният глас.</string>
     <string name="percentage_spoken">%1$d процента</string>
     <string name="book_progress">Напредък във файла</string>

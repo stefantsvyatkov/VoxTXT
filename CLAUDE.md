@@ -130,6 +130,10 @@ backwards, not an idea.
   route, not a bundled library.
 - **Fade approaches for the sleep timer.** DynamicsProcessing and Equalizer were both tried and both sounded
   wrong to the user. The linear device-volume fade is the one that works; leave it alone.
+- **Showing the voice sliders as a multiplier instead of a percent.** Weighed and turned down. The ranges
+  already match what Android uses for its own settings - rate 0.1 to 6, pitch 0.25 to 4 - so the whole
+  range is there, and the user finds a percent of the slider easier to hear than "1.3 times". That normal
+  speed falls at 15 per cent of the travel is how the platform slider behaves too, and is not a fault.
 - **Switching voices inside Neural Speechlab.** Proven impossible by decompiling that engine. Not our bug.
 
 ## Reading a document, and what it may cost

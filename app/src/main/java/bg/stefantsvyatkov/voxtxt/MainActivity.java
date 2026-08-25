@@ -1741,7 +1741,7 @@ public class MainActivity extends Activity implements ReaderService.Listener {
         LinearLayout.LayoutParams params = new LinearLayout.LayoutParams(-1, -2);
         params.setMargins(contentInset(), topMargin, contentInset(), 0); return params;
     }
-    private AccessibleSpinner stepSpinner(LinearLayout box, int captionResource, String key, int[] values, int fallback) {
+    private AccessibleSpinner stepSpinner(LinearLayout box, int captionResource, String key, int[] values, int fallback, SpinnerSelectionObserver observer) {
         String[] labels = new String[values.length];
         for (int i = 0; i < values.length; i++) labels[i] = String.valueOf(values[i]);
         AccessibleSpinner spinner = new AccessibleSpinner(this);
@@ -1750,7 +1750,7 @@ public class MainActivity extends Activity implements ReaderService.Listener {
         int saved = getSettings().getInt(key, fallback), at = 0;
         for (int i = 0; i < values.length; i++) if (values[i] == saved) at = i;
         spinner.setSelection(at, false);
-        configureSpinnerAccessibility(spinner, labels);
+        configureSpinnerAccessibility(spinner, labels, observer);
         return spinner;
     }
     private LinearLayout.LayoutParams below(int topMargin) {
@@ -1815,8 +1815,6 @@ public class MainActivity extends Activity implements ReaderService.Listener {
         pausePlaybackOutsideReader(); sliderValues.clear();
         LinearLayout box = new LinearLayout(this); box.setOrientation(LinearLayout.VERTICAL);
         final int[] previewScale = {p.getInt("interface_scale", 100)};
-        final boolean[] keepPreview = {false};
-        final Runnable[] save = {null};
         int heading;
         if (which == GENERAL) {
             heading = R.string.settings_general;
@@ -1856,61 +1854,61 @@ public class MainActivity extends Activity implements ReaderService.Listener {
                 public void onProgressChanged(SeekBar bar, int progress, boolean fromUser) {
                     int value = 50 + progress * 5; updateSliderPercentValue(bar);
                     if (value != previewScale[0]) { previewInterfaceScale(previewScale[0], value); previewScale[0] = value; }
+                    p.edit().putInt("interface_scale", value).apply();
                 }
             });
-            SeekBar font = seek(box, R.string.document_font_size, 14, 32, p.getInt("font_size", 23));
+            final SeekBar[] font = new SeekBar[1];
+            font[0] = seek(box, R.string.document_font_size, 14, 32, p.getInt("font_size", 23), () -> {
+                int value = seekValue(font[0]);
+                p.edit().putInt("font_size", value).apply();
+                if (body != null) body.setTextSize(value);
+            });
             CheckBox closeOnBack = new CheckBox(this); closeOnBack.setText(R.string.close_on_back);
             closeOnBack.setTextSize(uiSize(labelTextSize())); closeOnBack.setChecked(p.getBoolean("close_on_back", false));
+            closeOnBack.setOnCheckedChangeListener((view, on) -> p.edit().putBoolean("close_on_back", on).apply());
             box.addView(closeOnBack, field(dp(8)));
-            save[0] = () -> {
-                int fontValue = seekValue(font), interfaceValue = 50 + interfaceFont.getProgress() * 5;
-                p.edit().putInt("font_size", fontValue).putInt("interface_scale", interfaceValue)
-                    .putBoolean("close_on_back", closeOnBack.isChecked()).apply();
-                keepPreview[0] = true; body.setTextSize(fontValue);
-            };
         } else if (which == READING) {
             heading = R.string.settings_reading;
             AccessibleSpinner keepScreenSpinner = new AccessibleSpinner(this); labelled(box, R.string.keep_screen_on, keepScreenSpinner);
             String[] keepScreenNames = {getString(R.string.keep_screen_off), getString(R.string.documents_section), getString(R.string.pages_section), getString(R.string.keep_screen_both)};
             keepScreenSpinner.setAdapter(themedSpinnerAdapter(keepScreenNames));
             keepScreenSpinner.setSelection(Math.max(0, Math.min(KEEP_SCREEN_VALUES.length - 1, indexOf(KEEP_SCREEN_VALUES, p.getString("keep_screen", "off")))), false);
-            configureSpinnerAccessibility(keepScreenSpinner, keepScreenNames);
+            configureSpinnerAccessibility(keepScreenSpinner, keepScreenNames, position -> {
+                p.edit().putString("keep_screen", KEEP_SCREEN_VALUES[position]).apply(); applyScreenSetting();
+            });
             CheckBox pauseForSettings = new CheckBox(this); pauseForSettings.setText(R.string.pause_for_settings);
             pauseForSettings.setTextSize(uiSize(labelTextSize())); pauseForSettings.setChecked(p.getBoolean("pause_for_settings", true));
+            pauseForSettings.setOnCheckedChangeListener((view, on) -> p.edit().putBoolean("pause_for_settings", on).apply());
             box.addView(pauseForSettings, field(dp(8)));
             CheckBox preventDeviceAutoplay = new CheckBox(this); preventDeviceAutoplay.setText(R.string.prevent_device_autoplay);
             preventDeviceAutoplay.setTextSize(uiSize(labelTextSize())); preventDeviceAutoplay.setChecked(p.getBoolean("prevent_device_autoplay", true));
+            preventDeviceAutoplay.setOnCheckedChangeListener((view, on) -> p.edit().putBoolean("prevent_device_autoplay", on).apply());
             box.addView(preventDeviceAutoplay, field(dp(8)));
             CheckBox webFromStart = new CheckBox(this); webFromStart.setText(R.string.web_from_start);
             webFromStart.setTextSize(uiSize(labelTextSize())); webFromStart.setChecked(p.getBoolean("web_from_start", true));
+            webFromStart.setOnCheckedChangeListener((view, on) -> p.edit().putBoolean("web_from_start", on).apply());
             box.addView(webFromStart, field(dp(8)));
-            save[0] = () -> {
-                p.edit().putString("keep_screen", KEEP_SCREEN_VALUES[keepScreenSpinner.getSelectedItemPosition()])
-                    .putBoolean("pause_for_settings", pauseForSettings.isChecked())
-                    .putBoolean("prevent_device_autoplay", preventDeviceAutoplay.isChecked())
-                    .putBoolean("web_from_start", webFromStart.isChecked()).apply();
-                applyScreenSetting();
-            };
         } else {
             heading = R.string.settings_seeking;
-            SeekBar fastSeekInterval = millisecondSeek(box, R.string.fast_seek_interval, FAST_SEEK_MIN_MS, FAST_SEEK_MAX_MS, 50, fastSeekInterval(p));
+            final SeekBar[] fastSeekInterval = new SeekBar[1];
+            fastSeekInterval[0] = millisecondSeek(box, R.string.fast_seek_interval, FAST_SEEK_MIN_MS, FAST_SEEK_MAX_MS, 50, fastSeekInterval(p),
+                () -> p.edit().putInt("fast_seek_interval", seekValue(fastSeekInterval[0])).apply());
             final int[] sentenceSteps = {5, 10, 15, 20}, paragraphSteps = {2, 4, 6};
-            AccessibleSpinner sentenceStep = stepSpinner(box, R.string.sentence_step, "sentence_step", sentenceSteps, 5);
-            AccessibleSpinner paragraphStep = stepSpinner(box, R.string.paragraph_step, "paragraph_step", paragraphSteps, 2);
+            stepSpinner(box, R.string.sentence_step, "sentence_step", sentenceSteps, 5,
+                position -> p.edit().putInt("sentence_step", sentenceSteps[Math.max(0, position)]).apply());
+            stepSpinner(box, R.string.paragraph_step, "paragraph_step", paragraphSteps, 2,
+                position -> p.edit().putInt("paragraph_step", paragraphSteps[Math.max(0, position)]).apply());
             CheckBox seekVibration = new CheckBox(this); seekVibration.setText(R.string.seek_vibration);
             seekVibration.setTextSize(uiSize(labelTextSize())); seekVibration.setChecked(p.getBoolean("seek_vibration", true));
+            seekVibration.setOnCheckedChangeListener((view, on) -> p.edit().putBoolean("seek_vibration", on).apply());
             box.addView(seekVibration, field(dp(8)));
-            save[0] = () -> p.edit().putInt("fast_seek_interval", seekValue(fastSeekInterval))
-                .putInt("sentence_step", sentenceSteps[Math.max(0, sentenceStep.getSelectedItemPosition())])
-                .putInt("paragraph_step", paragraphSteps[Math.max(0, paragraphStep.getSelectedItemPosition())])
-                .putBoolean("seek_vibration", seekVibration.isChecked()).apply();
         }
-        // Apply and Back both lead back to the list of categories rather than out to the reading: settings are
-        // usually changed several at a time, and being thrown to the book after each one is a walk back.
+        // Every setting here takes effect the moment it is touched, so there is nothing left to apply and no
+        // button to look for. Two of them behaved that way already while the other three waited for Apply, and
+        // from listening alone there was no telling which was which. Back leads to the list of categories
+        // rather than out to the reading: settings are usually changed several at a time.
         subpageBackTarget = this::showSettings;
-        Runnable apply = () -> { save[0].run(); subpageBackTarget = null; showSettings(); };
-        Runnable close = () -> { if (!keepPreview[0]) previewInterfaceScale(previewScale[0], p.getInt("interface_scale", 100)); };
-        showSettingsPage(heading, box, apply, close);
+        showSettingsPage(heading, box, null, null);
     }
     // The window carries the theme and the language, so both are changed by building the screen again. The
     // category being looked at is remembered across it and opened again once the new screen is up.
@@ -2113,9 +2111,10 @@ public class MainActivity extends Activity implements ReaderService.Listener {
         int chosen = choice == -1 ? customMinutes : choice;
         applied[0] = true; reader.setSleepMinutes(chosen); updateSleepRow();
     }
-    private SeekBar seek(LinearLayout box, int label, int min, int max, int value) {
+    private SeekBar seek(LinearLayout box, int label, int min, int max, int value) { return seek(box, label, min, max, value, null); }
+    private SeekBar seek(LinearLayout box, int label, int min, int max, int value, Runnable changed) {
         SeekBar s = new SeekBar(this); thicken(s); s.setTag(new SeekRange(min, max)); s.setMax(20); s.setProgress(Math.round((value - min) * 20f / (max - min)));
-        sliderValues.put(s, labelledWithValue(box, label, s)); updateSliderPercentValue(s); s.setOnSeekBarChangeListener(new SeekBar.OnSeekBarChangeListener() { public void onStartTrackingTouch(SeekBar seekBar) {} public void onStopTrackingTouch(SeekBar seekBar) {} public void onProgressChanged(SeekBar seekBar, int progress, boolean fromUser) { updateSliderPercentValue(seekBar); } }); return s;
+        sliderValues.put(s, labelledWithValue(box, label, s)); updateSliderPercentValue(s); s.setOnSeekBarChangeListener(new SeekBar.OnSeekBarChangeListener() { public void onStartTrackingTouch(SeekBar seekBar) {} public void onStopTrackingTouch(SeekBar seekBar) {} public void onProgressChanged(SeekBar seekBar, int progress, boolean fromUser) { updateSliderPercentValue(seekBar); if (changed != null) changed.run(); } }); return s;
     }
     private PercentSeekBar percentSeek(LinearLayout box, int label, int value) {
         PercentSeekBar seek = new PercentSeekBar(this); thicken(seek);
@@ -2123,10 +2122,12 @@ public class MainActivity extends Activity implements ReaderService.Listener {
         seek.setOnSeekBarChangeListener(new SeekBar.OnSeekBarChangeListener() { public void onStartTrackingTouch(SeekBar s) {} public void onStopTrackingTouch(SeekBar s) {} public void onProgressChanged(SeekBar s, int progress, boolean fromUser) { int percent = seek.percent(); int rounded = Math.max(0, Math.min(100, Math.round(percent / 5f) * 5)); if (rounded != percent) seek.setPercent(rounded); else updatePercentValue(seek, rounded); } });
         return seek;
     }
-    private void setMillisecondsDescription(SeekBar gap) { updateMillisecondsValue(gap); gap.setOnSeekBarChangeListener(new SeekBar.OnSeekBarChangeListener() { public void onStartTrackingTouch(SeekBar s) {} public void onStopTrackingTouch(SeekBar s) {} public void onProgressChanged(SeekBar s, int progress, boolean fromUser) { updateMillisecondsValue(s); } }); }
+    private void setMillisecondsDescription(SeekBar gap) { setMillisecondsDescription(gap, null); }
+    private void setMillisecondsDescription(SeekBar gap, Runnable changed) { updateMillisecondsValue(gap); gap.setOnSeekBarChangeListener(new SeekBar.OnSeekBarChangeListener() { public void onStartTrackingTouch(SeekBar s) {} public void onStopTrackingTouch(SeekBar s) {} public void onProgressChanged(SeekBar s, int progress, boolean fromUser) { updateMillisecondsValue(s); if (changed != null) changed.run(); } }); }
     private void setSliderValueDescription(SeekBar seek, String value) { if (Build.VERSION.SDK_INT >= 30) { seek.setContentDescription(null); seek.setStateDescription(value); } else seek.setContentDescription(value); }
     private SeekBar millisecondSeek(LinearLayout box, int value) { return millisecondSeek(box, R.string.sentence_pause, 0, 2000, 100, value); }
-    private SeekBar millisecondSeek(LinearLayout box, int labelResource, int min, int max, int step, int value) { SeekBar seek = new SeekBar(this); thicken(seek); seek.setTag(new SeekRange(min, max)); seek.setMax((max - min) / step); seek.setProgress(Math.max(0, Math.min(seek.getMax(), Math.round((value - min) / (float)step)))); sliderValues.put(seek, labelledWithValue(box, labelResource, seek)); setMillisecondsDescription(seek); return seek; }
+    private SeekBar millisecondSeek(LinearLayout box, int labelResource, int min, int max, int step, int value) { return millisecondSeek(box, labelResource, min, max, step, value, null); }
+    private SeekBar millisecondSeek(LinearLayout box, int labelResource, int min, int max, int step, int value, Runnable changed) { SeekBar seek = new SeekBar(this); thicken(seek); seek.setTag(new SeekRange(min, max)); seek.setMax((max - min) / step); seek.setProgress(Math.max(0, Math.min(seek.getMax(), Math.round((value - min) / (float)step)))); sliderValues.put(seek, labelledWithValue(box, labelResource, seek)); setMillisecondsDescription(seek, changed); return seek; }
     private TextView labelled(LinearLayout box, int captionResource, View control) {
         TextView name = label(getString(captionResource), labelTextSize(), true);
         box.addView(name, field(dp(16)));
