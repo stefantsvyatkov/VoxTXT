@@ -33,8 +33,10 @@
     <string name="clipboard_empty">Клипбордът е празен</string>
     <string name="clipboard_text">Клипборд</string>
     <string name="web_address">Уеб адрес</string>
-    <string name="credits">Благодарности</string>
-    <string name="credits_text">Vox TXT чете уеб страници и отваря книги във формат EPUB, FB2 и DOCX с помощта на две библиотеки с отворен код.\n\njsoup — HTML парсерът, от Jonathan Hedley, лиценз MIT.\n\nReadability4J — пренос на Mozilla Readability, същата, която стои зад Reader View във Firefox, от Christian Dankl, лиценз Apache 2.0.\n\nБлагодарим.</string>
+    <string name="about">За приложението</string>
+    <string name="about_version">Vox TXT версия %1$s</string>
+    <string name="about_developer">Разработчик\nСтефан Цвятков</string>
+    <string name="about_text">Vox TXT е приложение за четене на текст и документи чрез инсталираните в устройството речеви синтезатори (TTS). То поддържа TXT, EPUB, FB2 и DOCX файлове, извличане на съдържание от уеб страници, споделен текст и четене на клипборда. Приложението е създадено с акцент върху достъпността и работата с екранни четци.\n\nVox TXT използва две библиотеки с отворен код:\njsoup - HTML parser от Jonathan Hedley, лиценз MIT.\nReadability4J - пренос на Mozilla Readability от Christian Dankl, лиценз Apache 2.0.\n\nБлагодаря на авторите и участниците в тези проекти.</string>
     <string name="previous_result">Предишен</string>
     <string name="close">Затваряне</string>
     <string name="welcome"></string>
@@ -108,7 +110,7 @@
     <string name="voice">Глас</string>
     <string name="numbered_voice">Глас %1$d</string>
     <string name="preview_voice">Тест на гласа</string>
-    <string name="stop_preview">Спиране на теста</string>
+    <string name="stop_preview">Спиране</string>
     <string name="voice_preview_sample">Така звучи избраният глас.</string>
     <string name="percentage_spoken">%1$d процента</string>
     <string name="book_progress">Напредък във файла</string>

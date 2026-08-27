@@ -194,8 +194,8 @@ public class MainActivity extends Activity implements ReaderService.Listener {
         // build, before the setting grew to four states and moved to a name of its own; "player_armed" said
         // whether a book was open, which is not a preference and has moved to where the open documents are
         // kept. A settings file never clears itself, and this one travels in the backup, so left alone either
-        // would ride onto every future phone. Delete these lines in Beta 6: Beta 5 is the release that meets
-        // the phones still carrying them.
+        // would ride onto every future phone. Beta 6 was never published, so 1.0 is the release that meets
+        // the phones still carrying them: delete these lines in the release after 1.0, not before.
         if (getSettings().contains("keep_screen_on") || getSettings().contains("player_armed")) getSettings().edit().remove("keep_screen_on").remove("player_armed").apply();
         applySavedLanguage();
         String selectedTheme = getSharedPreferences("reader_settings", MODE_PRIVATE).getString("theme", "system");
@@ -986,7 +986,7 @@ public class MainActivity extends Activity implements ReaderService.Listener {
 
     private void pausePlaybackOutsideReader() {
         cancelAutomaticResume(false);
-        if (reader != null && reader.isPlaying() && getSettings().getBoolean("pause_for_settings", true)) {
+        if (reader != null && reader.isPlaying() && getSettings().getBoolean("pause_for_settings", false)) {
             pausedAutomaticallyOutsideReader = true;
             reader.pause();
         }
@@ -1405,7 +1405,7 @@ public class MainActivity extends Activity implements ReaderService.Listener {
         // One order, whatever is open; the rows that do not apply are simply left out. First the two ways of
         // bringing something new in, which are the only rows that work with nothing open at all. Then the ways
         // of getting somewhere inside what is open. Then what can be done with the text as a whole. Settings
-        // and credits last, where they are on every screen.
+        // and the page about the app last, where they are on every screen.
         java.util.List<String> names = new ArrayList<>(); java.util.List<Runnable> actions = new ArrayList<>();
         boolean open = reader != null && reader.getCount() > 0;
         names.add(getString(R.string.open_url)); actions.add(this::showOpenUrlDialog);
@@ -1423,7 +1423,7 @@ public class MainActivity extends Activity implements ReaderService.Listener {
         // Anything that is not already a plain text file sitting on the phone can be written out as one.
         if (loadedText != null && !fromPlainTextFile) { names.add(getString(R.string.save_as_txt)); actions.add(this::saveAsTxt); }
         names.add(getString(R.string.settings)); actions.add(this::showSettings);
-        names.add(getString(R.string.credits)); actions.add(this::showCredits);
+        names.add(getString(R.string.about)); actions.add(this::showAbout);
         final boolean[] chosen = {false};
         AlertDialog dialog = new AlertDialog.Builder(this).setTitle(R.string.more).setItems(names.toArray(new String[0]), (d, which) -> {
             chosen[0] = true; actions.get(which).run();
@@ -1594,12 +1594,40 @@ public class MainActivity extends Activity implements ReaderService.Listener {
             return value == null ? "" : value.toString();
         } catch (Exception e) { return ""; }
     }
-    private void showCredits() {
+    // The mark at the top is drawn for the eye and skipped by the screen reader, so the page reads as the
+    // three things it holds: what the app is called and which version it is, who wrote it, and what it does.
+    private void showAbout() {
         LinearLayout box = listPage();
-        TextView text = label(getString(R.string.credits_text), labelTextSize(), false);
-        text.setPadding(dp(8), dp(12), dp(8), dp(12)); text.setLineSpacing(0, 1.25f);
-        box.addView(text);
-        showListPage(R.string.credits, box);
+        ImageView mark = new ImageView(this);
+        mark.setImageResource(R.mipmap.ic_launcher);
+        mark.setScaleType(ImageView.ScaleType.FIT_CENTER);
+        mark.setImportantForAccessibility(View.IMPORTANT_FOR_ACCESSIBILITY_NO);
+        LinearLayout.LayoutParams markRow = new LinearLayout.LayoutParams(dp(96), dp(96));
+        markRow.gravity = Gravity.CENTER_HORIZONTAL; markRow.setMargins(0, dp(16), 0, 0);
+        box.addView(mark, markRow);
+
+        TextView version = label(getString(R.string.about_version, appVersion()), 28, true);
+        version.setGravity(Gravity.CENTER_HORIZONTAL);
+        box.addView(version, below(dp(16)));
+
+        TextView developer = label(getString(R.string.about_developer), 24, false);
+        developer.setGravity(Gravity.CENTER_HORIZONTAL);
+        box.addView(developer, below(dp(8)));
+
+        TextView text = label(getString(R.string.about_text), labelTextSize(), false);
+        text.setPadding(dp(8), 0, dp(8), 0); text.setLineSpacing(0, 1.25f);
+        box.addView(text, below(dp(24)));
+
+        showListPage(R.string.about, box);
+    }
+    // The release label only, so a build carrying 1.0-beta7 would still show 1.0 on the page.
+    private String appVersion() {
+        try {
+            String name = getPackageManager().getPackageInfo(getPackageName(), 0).versionName;
+            if (name == null) return "";
+            int dash = name.indexOf('-');
+            return dash > 0 ? name.substring(0, dash) : name;
+        } catch (Exception ignored) { return ""; }
     }
 
     // The article as a file, in the Downloads folder under a Vox TXT of its own, so it sits with everything
@@ -1877,11 +1905,11 @@ public class MainActivity extends Activity implements ReaderService.Listener {
                 p.edit().putString("keep_screen", KEEP_SCREEN_VALUES[position]).apply(); applyScreenSetting();
             });
             CheckBox pauseForSettings = new CheckBox(this); pauseForSettings.setText(R.string.pause_for_settings);
-            pauseForSettings.setTextSize(uiSize(labelTextSize())); pauseForSettings.setChecked(p.getBoolean("pause_for_settings", true));
+            pauseForSettings.setTextSize(uiSize(labelTextSize())); pauseForSettings.setChecked(p.getBoolean("pause_for_settings", false));
             pauseForSettings.setOnCheckedChangeListener((view, on) -> p.edit().putBoolean("pause_for_settings", on).apply());
             box.addView(pauseForSettings, field(dp(8)));
             CheckBox preventDeviceAutoplay = new CheckBox(this); preventDeviceAutoplay.setText(R.string.prevent_device_autoplay);
-            preventDeviceAutoplay.setTextSize(uiSize(labelTextSize())); preventDeviceAutoplay.setChecked(p.getBoolean("prevent_device_autoplay", true));
+            preventDeviceAutoplay.setTextSize(uiSize(labelTextSize())); preventDeviceAutoplay.setChecked(p.getBoolean("prevent_device_autoplay", false));
             preventDeviceAutoplay.setOnCheckedChangeListener((view, on) -> p.edit().putBoolean("prevent_device_autoplay", on).apply());
             box.addView(preventDeviceAutoplay, field(dp(8)));
             CheckBox webFromStart = new CheckBox(this); webFromStart.setText(R.string.web_from_start);
@@ -2073,7 +2101,7 @@ public class MainActivity extends Activity implements ReaderService.Listener {
         LinearLayout customRow = new LinearLayout(this); customRow.setGravity(Gravity.CENTER_VERTICAL);
         customRow.addView(customChoice, new LinearLayout.LayoutParams(0, -2, 1)); customRow.addView(customValue, new LinearLayout.LayoutParams(-2, -2));
         choices.addView(customRow, new LinearLayout.LayoutParams(-1, -2)); box.addView(choices);
-        MinuteSeekBar custom = new MinuteSeekBar(this); thicken(custom); custom.setProgress(Math.max(0, Math.min(89, p.getInt("custom_sleep_minutes", 30) - 1)));
+        MinuteSeekBar custom = new MinuteSeekBar(this); thicken(custom); custom.setProgress(Math.max(0, Math.min(89, p.getInt("custom_sleep_minutes", 10) - 1)));
         SeekBar.OnSeekBarChangeListener customListener = new SeekBar.OnSeekBarChangeListener() { public void onStartTrackingTouch(SeekBar s) {} public void onStopTrackingTouch(SeekBar s) {} public void onProgressChanged(SeekBar s, int progress, boolean fromUser) { int value = progress + 1; String spoken = getResources().getQuantityString(R.plurals.minutes, value, value); customValue.setText(getString(R.string.minutes_short_value, value)); setSliderValueDescription(custom, spoken); } }; custom.setOnSeekBarChangeListener(customListener); customListener.onProgressChanged(custom, custom.getProgress(), false);
         LinearLayout.LayoutParams customBar = new LinearLayout.LayoutParams(-1, -2);
         int barEdge = Math.max(0, dialogPadding() - contentInset() - menuEdge); customBar.setMargins(barEdge, 0, barEdge, 0);

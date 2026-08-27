@@ -1,6 +1,6 @@
 # Vox TXT — changelog
 
-## Changes in Beta 6
+## Changes in 1.0
 
 ### New
 
@@ -19,9 +19,12 @@
 3. Pause playback outside reader has been renamed to Pause reading when another screen opens, while Voice settings is now Voice options.
 4. Fast seek interval is now Fast seek speed. Separate settings have also been added for how many sentences or paragraphs are covered by each step during fast seeking.
 5. Go to the beginning now preserves the current playback state. If reading is stopped, the document moves to the beginning and remains stopped; if it is playing, reading continues from the beginning. Setting a sleep timer also no longer starts reading when playback is stopped.
-6. Settings can now be opened when no document is loaded. More also shows only the commands that currently apply, leaving just the options for opening content, Settings and Credits when nothing is open.
+6. Settings can now be opened when no document is loaded. More also shows only the commands that currently apply, leaving just the options for opening content, Settings and About the app when nothing is open.
 7. When section navigation is selected and a document without sections is opened, Vox TXT now returns to the previously used navigation type — sentences or paragraphs — instead of always switching to sentences.
 8. The maximum file size has been increased from 5 MB to 50 MB. Resources that are not needed for reading, such as images, fonts, audio and video, do not count toward the text being processed. Documents that contain too much text to be handled safely are still rejected.
+9. Credits is now About the app: the icon, the name and version, the developer, and a short description of what Vox TXT does, along with the two open source libraries and their licences.
+10. Pause reading when another screen opens is now off by default, so opening Settings or another page no longer stops the reading unless you ask it to.
+11. Prevent automatic playback when an audio device connects is now off by default, and the custom sleep timer starts at 10 minutes instead of 30.
 
 ### Fixed
 

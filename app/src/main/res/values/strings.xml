@@ -33,8 +33,10 @@
     <string name="clipboard_empty">The clipboard is empty</string>
     <string name="clipboard_text">Clipboard</string>
     <string name="web_address">Web address</string>
-    <string name="credits">Credits</string>
-    <string name="credits_text">Vox TXT reads web pages, and opens EPUB, FB2 and DOCX books, with the help of two open source libraries.\n\njsoup — the HTML parser, by Jonathan Hedley, MIT licence.\n\nReadability4J — a port of Mozilla Readability, the same one behind Firefox Reader View, by Christian Dankl, Apache Licence 2.0.\n\nThank you.</string>
+    <string name="about">About the app</string>
+    <string name="about_version">Vox TXT version %1$s</string>
+    <string name="about_developer">Developer\nStefan Tsvyatkov</string>
+    <string name="about_text">Vox TXT is an app for reading text and documents using text-to-speech (TTS) engines installed on the device. It supports TXT, EPUB, FB2 and DOCX files, content extraction from web pages, shared text and clipboard contents. The app is designed with a focus on accessibility and screen reader use.\n\nVox TXT uses two open-source libraries:\njsoup - an HTML parser by Jonathan Hedley, MIT License.\nReadability4J - a port of Mozilla Readability by Christian Dankl, Apache License 2.0.\n\nThanks to the authors and contributors to these projects.</string>
     <string name="previous_result">Previous</string>
     <string name="close">Close</string>
     <string name="welcome"></string>
@@ -107,8 +109,8 @@
     <string name="speech_engine">Speech engine</string>
     <string name="voice">Voice</string>
     <string name="numbered_voice">Voice %1$d</string>
-    <string name="preview_voice">Preview voice</string>
-    <string name="stop_preview">Stop the preview</string>
+    <string name="preview_voice">Test voice</string>
+    <string name="stop_preview">Stop</string>
     <string name="voice_preview_sample">This is how the selected voice sounds.</string>
     <string name="percentage_spoken">%1$d percent</string>
     <string name="book_progress">File progress</string>

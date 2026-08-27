@@ -129,7 +129,7 @@ public class ReaderService extends Service implements TextToSpeech.OnInitListene
                 if (!knownAudioOutputs.add(device.getId())) continue;
                 if (isExternalAudioOutput(device)) newAccessory = true;
             }
-            if (newAccessory && getSharedPreferences("reader_settings", MODE_PRIVATE).getBoolean("prevent_device_autoplay", true)) suppressExternalPlayUntil = SystemClock.elapsedRealtime() + 3000L;
+            if (newAccessory && getSharedPreferences("reader_settings", MODE_PRIVATE).getBoolean("prevent_device_autoplay", false)) suppressExternalPlayUntil = SystemClock.elapsedRealtime() + 3000L;
         }
         @Override public void onAudioDevicesRemoved(AudioDeviceInfo[] removedDevices) {
             for (AudioDeviceInfo device : removedDevices) knownAudioOutputs.remove(device.getId());
@@ -1104,7 +1104,7 @@ public class ReaderService extends Service implements TextToSpeech.OnInitListene
         Intent mediaButtons = new Intent(Intent.ACTION_MEDIA_BUTTON).setClass(this, MediaButtonReceiver.class);
         mediaSession.setMediaButtonReceiver(PendingIntent.getBroadcast(this, 11, mediaButtons, PendingIntent.FLAG_UPDATE_CURRENT | PendingIntent.FLAG_MUTABLE));
         mediaSession.setCallback(new MediaSession.Callback() {
-            @Override public void onPlay() { if (!getSharedPreferences("reader_settings", MODE_PRIVATE).getBoolean("prevent_device_autoplay", true) || SystemClock.elapsedRealtime() >= suppressExternalPlayUntil) play(); }
+            @Override public void onPlay() { if (!getSharedPreferences("reader_settings", MODE_PRIVATE).getBoolean("prevent_device_autoplay", false) || SystemClock.elapsedRealtime() >= suppressExternalPlayUntil) play(); }
             @Override public void onPause() { pause(); }
             @Override public void onStop() { pause(); }
             @Override public void onSkipToPrevious() { move(-1); }

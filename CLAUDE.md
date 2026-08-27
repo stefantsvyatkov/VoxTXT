@@ -121,8 +121,20 @@ backwards, not an idea.
 
 - **Chapter detection.** Written, tested against four real Bulgarian books, removed: front matter and
   "Recognition and editing" lines were indistinguishable from chapters.
-- **Estimated elapsed and remaining time.** The estimate moved by minutes every few sentences. Without an
-  audio stream there is nothing stable to measure.
+- **Estimated elapsed and remaining time, learned from listening.** Tried twice. The first attempt averaged
+  the sentences it had heard and the estimate moved by minutes every few sentences. The second was worked out
+  properly on the real books and turned down on the numbers: a document of an hour or two lands on the right
+  ten-minute step almost always, but a book of fifteen hours lands on it about half the time and one of sixty
+  hours hardly ever, and the more unevenly the engine speaks the more often the number wants to correct itself
+  in front of the reader. Two things the deliberate measurement has cannot be had this way - its two hundred
+  sentences are spread through the whole book rather than taken from the opening, and it measures the size of
+  a written file rather than the timing of real speech, so it has no jitter to fight. Fitting a line to heard
+  sentences also needs the odd ones set aside, and setting them aside pulls the answer low, because a stumble
+  makes a sentence slower and never faster.
+- **Speed tables per voice, in words or characters a minute.** The engine-independent form of the same wish.
+  Every engine answers a change of rate in its own way, so a table would have to hold an entry for each engine,
+  each voice and each speed, and the app has to work with voices nobody here has heard. What the deliberate
+  measurement fits is that same number, learned from the voice in front of it instead of looked up.
 - **Start and end sounds.** Removed with their option. The end of a book is spoken instead.
 - **PDF and legacy .doc.** PDF was dropped because ML Kit has no Cyrillic at all, so a scanned Bulgarian book
   would need Tesseract with downloaded language data. Note for the future: Android itself gained PDF text
@@ -206,7 +218,7 @@ migration. Renaming any of them silently resets everyone's voice and speed.
 **Never change the stored type of a key. Use a new name instead.** `keep_screen_on` was a boolean for one
 build and then became a word; reading a string from a boolean throws, and the app crashed on opening Options
 for anyone who had the earlier build. It now stores under `keep_screen`, and `MainActivity.onCreate` holds a
-cleanup of that key and of `player_armed`, to be deleted in Beta 6 - a cleanup has to ship in the release
+cleanup of that key and of `player_armed`, to be deleted after 1.0 - a cleanup has to ship in the release
 that meets the phones carrying the old key, and only then can it go.
 
 `nav_unit_plain` holds the last unit chosen that every document can offer, so a book read by paragraphs is
