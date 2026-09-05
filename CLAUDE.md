@@ -70,6 +70,44 @@ left to the system. `appColor` asks a context told which mode is in force instea
 AppThemeLight and AppThemeDark stay written out, because the window is dressed before any code runs; they
 are plain white and black and have never moved.
 
+**A colour borrowed from elsewhere in the app is measured against the page it will land on, first.** Twice
+now a colour that works perfectly where it lives has failed where it was moved to. `highlight` is #FFD54F in
+both themes and is a background with black ink on it; written as text on the light theme's white page it is
+1.41 to 1, which is nothing at all. `button_bg` is a fill with white on it; the dark theme's #125AAD written
+on black is 3.09 to 1. `select_action` is what the marking mode uses instead: #002171 for light, the fill
+colour itself at 14.42 to 1, and #1E88E5 for dark at 5.71 to 1. On black, deeper means dimmer -
+contrast there is luminance and nothing else - so the two themes are asked for the opposite thing by the same
+words, and #00154D and #1E88E5 are where that lands.
+
+**Asking for accessibility focus is not the same as getting it.** A view that has not been laid out accepts
+`ACTION_ACCESSIBILITY_FOCUS` and does nothing with it, and the reader then announces a control it is not
+standing on - which is worse than not moving, because nothing about it looks wrong. `focusHeading` checks
+`isAccessibilityFocused` afterwards and asks again if it did not take, up to three times, and stops the moment
+it has taken so that a reader who has moved on by hand is never pulled back.
+
+**A disabled Button needs a `ColorStateList`, not a colour.** `button()` was given one flat colour for the
+fill and one for the lettering, so `setEnabled(false)` changed nothing that could be seen. The lettering fades
+and the fill stays: greying the fill as well was built, shown to the user and taken out again - a row of grey
+slabs stops reading as a row of buttons.
+
+**The app does not take the focus back after a dropdown, and should not be made to again.** It did, on a
+delay, and the delay was the problem: too short and it cut across what was being said, too long and the reader
+had moved on. Varying the wait and retrying was built, tried on the phone and taken out - it made the
+behaviour less predictable rather than more, and sometimes said everything twice. `focusHeading` is now one
+wait and one attempt, used only where a page was rebuilt under the reader's feet, and it never asks for the
+control the reader is already standing on: that is not a move, but the reader reads the control out again
+for it.
+
+**A sleep timer counts listening, not time.** `sleepHeldMillis` is what is left of one that is not counting
+because the reading is not running; `pause()` holds it and `play()` arms it again, at the end of `play()`
+rather than the start, so a Play that could not get the sound does not start it counting over silence.
+
+**A list that can delete one entry can delete many, and all three do it the same way.** Bookmarks, recent
+documents and recent pages share `selectionModeButton`, `markRow` and `selectionActions`. What is marked lives
+in `markedItems`, keyed by what already identifies the entry, because these pages are rebuilt from storage on
+every change and a tick kept in a checkbox would be thrown away with it. `leaveSelection` is called on the way
+out of a page and on a change of tab; a mode left armed would meet the next list with somebody else's ticks.
+
 **Ask the platform before writing a number down.** `systemDimension` and `systemTextSize` in `MainActivity`
 read the theme, and four measures come from there: the height of a list row and of a menu row, the side
 padding of a list row, the padding inside a dialog, and the size of text that names a control. The values
@@ -203,6 +241,14 @@ opens once from the picker and then says "unsupported content" from Recent files
 swallowed, so nothing said what had happened. A permission that cannot be read is `file_unavailable`, not
 `unsupported_content`. `forgetBook` gives the grant back, because Android keeps only so many.
 
+**A shared file arrives as `EXTRA_STREAM`, never as `EXTRA_TEXT`.** Share was written for a browser sending
+an address, so it read the text and nothing else, and a book shared from a cloud drive was answered with "no
+web address was shared" - the message was honest and the code was looking in the wrong place. A file now wins
+over text when both are sent, and goes to the same `loadUri` that Open with uses. The other half of that bug
+was in the manifest: the SEND filter declared `text/plain` alone, so the app was not even offered for a DOCX
+or an EPUB. Its types are now the ones the VIEW filters accept, and must be kept in step with them.
+`SEND_MULTIPLE` is deliberately not declared.
+
 **What was read out of a document is kept for the twenty documents in the list**, in `doccache/`, and the
 rule is the same as for the page cache: the file is the truth, the copy stands in for it. Size and modified
 time decide whether the copy is still the file; only an unreachable file is read from the copy regardless.
@@ -256,6 +302,75 @@ the backup on purpose: the permissions to open those files are not restored, so 
 - **Leaving a subpage never questions what is open.** `closeRecent` used to ask whether the open document was
   still in the recent list, which threw away web pages and then shared text. Removing a book from the list
   already closes it if it is the one being read; nothing else needs asking.
+
+## The sleep timer, and what reaches the reading from outside
+
+**The timer never cuts a sentence and never touches the volume.** It marks that the time is up and the stop
+happens where the sentence ends. The ten-second fade of the device volume that 1.0 shipped was removed in
+1.1: it cut a sentence in half and had to step back a sentence to put it back, it borrowed the volume of the
+whole phone and had to give it back even if the process was killed mid-fade, and Do Not Disturb could refuse
+it the change halfway through. `restoreVolumeAfterCrash` and `setMusicVolume` are all that is left of it, for
+the phones that carry a stored `fade_volume` from an earlier build; delete both after 1.1.
+
+**The button under the player belongs to the timer and only changes what it says.** The timer runs out
+several seconds before the reading stops, because the sentence is allowed to finish. A row that emptied at the
+first of those moments and filled at the second sent the player down and back up in front of the reader.
+`isStoppingAtSentenceEnd` is what lets the row hold still through the gap, and `shownTimerMinutes` is what
+lets it go on saying the same thing if the screen is rebuilt inside it. The only movement left is the return
+button arriving underneath.
+
+**Where the timer will return to is taken when it is set, not only at the next Play.** `captureSleepStartOnPlay`
+alone meant a timer set over a book already reading had no starting point, and "Return by X minutes" never
+appeared when it ran out.
+
+**`PENDING_CATEGORY` is not a note about a rebuild. It is which settings page is open.** Written when one
+opens, cleared when one closes, and true for exactly as long as the page is on the screen - which is what
+makes a rebuild reliable rather than lucky. It survives one rebuild, two rebuilds, or a restart by any route,
+and needs no timer and no guess at how long a rebuild takes. The three attempts before this all failed in the
+same way: they tried to describe the rebuild instead of describing where the reader was. It lives in the
+settings and not in the instance-state bundle because changing the language below Android 13 restarts by a
+route that hands no bundle on.
+
+The note is only honoured by a screen that was rebuilt, and `processAlreadyRunning` - a static, so it dies
+with the process and no sooner - is what tells a rebuild from a fresh start. Nothing else can: `onDestroy`
+was asked first and answered wrongly, because `keepReadingAfterFinish` is left true by the very rebuild that
+set it, so an app swiped out of Recents from a settings page came back onto that page days later. A lifecycle
+callback that may or may not run is the wrong thing to hang this on; whether the process is new is a fact.
+
+**A theme change rebuilds the screen and cannot simply repaint it.** The two themes are built on different
+platform parents - Material Light and Material - and everything the platform draws for this app comes from
+there: the dialogs, the dropdown popups, the touch highlight on a row. `setTheme` over a window already
+dressed merges rather than replaces, so those would keep the look of the theme being left.
+
+**Whatever comes back on start, the settings page comes back after it.** `onCreate` had three ways in and two
+of them returned outright, so a theme chosen with a web page open landed back on the page. The restore paths
+are one branch now and nothing returns past the block that reopens the page.
+
+**Play at the end of a document goes back to the beginning, and says so.** Only the end reached by reading
+counts - `reachedEnd` - so walking to the last sentence by hand is unaffected. The announcement is an
+utterance like any other and every way it can end, including the engine taking it and saying nothing, starts
+the reading anyway: an announcement that failed is never a reason to leave Pause showing over silence.
+
+**Every Play that comes from outside goes through `playFromOutside`, and nothing else does.** The guard for
+"Prevent automatic playback" sat in `MediaSession.Callback.onPlay` alone, and a headset, a car and a watch all
+send a key event, which `onMediaButtonEvent` answers first - so the setting stood in a doorway nobody used.
+Play in the app and Play in our own notification call `play()` straight through and must never be refused.
+
+## Reading a sentence aloud
+
+**The filter for decoration works on a copy of one sentence and nothing else.** `speakable` is applied to what
+is handed to `tts.speak` and to nothing that is stored. Every offset, the highlight, search, the contents and
+the bookmarks describe the text as it was written, and they must go on doing so.
+
+**Whole Unicode categories, not a list of characters.** A list only covers documents somebody has already
+opened. Symbols, math signs, modifiers and the connector punctuation go; standard punctuation, currency and
+digits stay. Two exceptions had to be named by hand: `№` is filed as a symbol but is a word in both
+languages, and the invisible characters - a soft hyphen, a joiner - are removed without a space in their place,
+because a space there splits a word.
+
+**Never hand the engine an empty string.** Some engines answer one with silence and never report it finished,
+and the reading stops there for good. `skipSilentSentence` moves on instead, and honours a timer that has run
+out exactly as a spoken sentence would.
 
 ## Accessibility rules the user cares about
 

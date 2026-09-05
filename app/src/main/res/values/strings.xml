@@ -74,7 +74,6 @@
     <string name="invalid_sentence">Enter a number from 1 to %1$d.</string>
     <string name="no_text">No readable text</string>
     <string name="end_of_text">End of text.</string>
-    <string name="no_more_text">No more text.</string>
     <string name="previous">Previous</string>
     <string name="next">Next</string>
     <string name="previous_sentence">Previous sentence</string>
@@ -124,6 +123,7 @@
     <string name="keep_screen_off">Off</string>
     <string name="keep_screen_both">Documents and web pages</string>
     <string name="close_on_back">Close the app with Back or Home</string>
+    <string name="skip_decorative">Skip decorative characters</string>
     <string name="web_from_start">Start a web page from the beginning</string>
     <string name="keep_screen_on">Keep the screen on while reading</string>
     <string name="prevent_device_autoplay">Prevent automatic playback when an audio device connects</string>
@@ -131,6 +131,8 @@
     <string name="sleep_timer">Sleep timer</string>
     <plurals name="rewind_sleep_minutes"><item quantity="one">Return by %1$d minute</item><item quantity="other">Return by %1$d minutes</item></plurals>
     <plurals name="cancel_sleep_timer"><item quantity="one">Cancel the timer, %1$d minute left</item><item quantity="other">Cancel the timer, %1$d minutes left</item></plurals>
+    <plurals name="cancel_sleep_timer_seconds"><item quantity="one">Cancel the timer, %1$d second</item><item quantity="other">Cancel the timer, %1$d seconds</item></plurals>
+    <plurals name="new_sleep_timer"><item quantity="one">New timer, %1$d minute</item><item quantity="other">New timer, %1$d minutes</item></plurals>
     <string name="custom_timer">Custom</string>
     <plurals name="hours"><item quantity="one">%1$d hour</item><item quantity="other">%1$d hours</item></plurals>
     <plurals name="minutes"><item quantity="one">%1$d minute</item><item quantity="other">%1$d minutes</item></plurals>
@@ -138,6 +140,10 @@
     <string name="cancel">Cancel</string>
     <string name="recent_books">Recent files</string>
     <string name="back">Back</string>
+    <string name="select_items">Select</string>
+    <string name="cancel_selection">Cancel</string>
+    <string name="select_all">Select all</string>
+    <string name="clear_selection">Clear selection</string>
     <string name="delete">Delete</string>
     <string name="remove_book">Remove %1$s from recent files</string>
     <string name="no_recent">No recently opened files</string>

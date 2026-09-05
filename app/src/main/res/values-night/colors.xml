@@ -6,8 +6,16 @@
     <color name="text_primary">#FFFFFF</color>
     <color name="text_secondary">#D0D0D0</color>
     <color name="highlight">#FFD54F</color>
+    <!-- The same blue on black, where contrast is luminance and nothing else, so a deeper blue is a dimmer
+         one. 5.71 to 1: a step up from the darkest that could still be read, and well short of the pale blue
+         the sliders used to wear. -->
+    <color name="select_action">#1E88E5</color>
     <color name="button_bg">#125AAD</color>
     <color name="button_text">#FFFFFF</color>
+    <!-- The same idea in the dark theme, where there is less room for it: white on this lighter blue is
+         only 6.79 to 1 to begin with, so the dimmed lettering can go no lower than 4.58 and still be read.
+         The difference is real but slighter here, and that is the fill's doing, not the lettering's. -->
+    <color name="button_text_disabled">#C8D5EA</color>
     <color name="slider_track">#3C3C3C</color>
     <color name="slider_fill">#1DB954</color>
 </resources>

@@ -6,8 +6,16 @@
     <color name="text_primary">#000000</color>
     <color name="text_secondary">#333333</color>
     <color name="highlight">#FFD54F</color>
+    <!-- Marking mode: the blue of the buttons, used as lettering rather than as a fill, and taken deeper
+         still because it is asked to be noticed. 17.29 to 1 on white, against 21 for the plain black text
+         beside it. Below this it stops reading as blue at all and simply looks like more black. -->
+    <color name="select_action">#00154D</color>
     <color name="button_bg">#002171</color>
     <color name="button_text">#FFFFFF</color>
+    <!-- A button that cannot be pressed keeps its fill and dims its lettering. Only the lettering: taking
+         the colour away as well was tried and looked wrong on the page. White on this blue is 14.42 to 1 and
+         this is 5.66, so the drop is plain to see and the words can still be read. -->
+    <color name="button_text_disabled">#8FA3C8</color>
     <color name="slider_track">#C9C9C9</color>
     <color name="slider_fill">#0F7A38</color>
 </resources>

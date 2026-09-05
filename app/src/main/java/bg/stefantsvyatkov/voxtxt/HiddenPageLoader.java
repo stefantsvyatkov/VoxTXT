@@ -3,11 +3,14 @@ package bg.stefantsvyatkov.voxtxt;
 import android.content.Context;
 import android.os.Handler;
 import android.os.Looper;
+import android.webkit.CookieManager;
 import android.webkit.WebResourceRequest;
 import android.webkit.WebResourceResponse;
 import android.webkit.WebSettings;
+import android.webkit.WebStorage;
 import android.webkit.WebView;
 import android.webkit.WebViewClient;
+import android.webkit.WebViewDatabase;
 
 import org.json.JSONTokener;
 
@@ -20,7 +23,8 @@ import java.util.Locale;
 //
 // Nothing here is relaxed about security. No certificate error is overridden - onReceivedSslError is left
 // alone, so a page with a bad certificate is refused by the system exactly as a browser would refuse it. The
-// page is not stored, no cookies are kept between runs, and images are not fetched at all.
+// page is not stored and images are not fetched at all. Cookies, DOM storage and the browser cache are wiped
+// as soon as the page has been read - see wipe() - so nothing the page set outlives the reading of it.
 final class HiddenPageLoader {
 
     interface Callback { void onHtml(String html); void onFailure(); }
@@ -74,7 +78,7 @@ final class HiddenPageLoader {
 
         // The tidy-up is posted rather than run where it stands, because it is reached from inside a callback
         // of the very browser being torn down. Removing what is pending comes first, so the post survives it.
-        Runnable done = () -> { handler.removeCallbacksAndMessages(null); web.stopLoading(); web.setWebViewClient(new WebViewClient()); handler.post(web::destroy); };
+        Runnable done = () -> { handler.removeCallbacksAndMessages(null); web.stopLoading(); web.setWebViewClient(new WebViewClient()); wipe(context, web); handler.post(web::destroy); };
         Runnable fail = () -> { if (finished[0]) return; finished[0] = true; done.run(); callback.onFailure(); };
 
         web.setWebViewClient(new WebViewClient() {
@@ -112,6 +116,23 @@ final class HiddenPageLoader {
 
         handler.postDelayed(fail, TIMEOUT_MS);
         web.loadUrl(address);
+    }
+
+    // Everything the page was allowed to leave behind, taken back out. Scripts and DOM storage are on because
+    // some sites will not assemble themselves without them, and a page that runs scripts can set a cookie, put
+    // something in local storage or open a database. None of that is wanted after the article has been read,
+    // so it is removed here rather than left to sit in the app's own folder until the app is uninstalled.
+    //
+    // The order matters. This runs after the HTML has been taken out of the page and after loading has been
+    // stopped, so there is nothing left to read and nothing still writing; the browser itself is destroyed on
+    // the next turn of the loop, after this has run. It runs on the failure path too, because a page that was
+    // refused or that timed out may still have set something before it gave up. Each part is guarded on its
+    // own: a store that cannot be cleared must not cost the reader the article that was already extracted.
+    private static void wipe(Context context, WebView web) {
+        try { CookieManager cookies = CookieManager.getInstance(); cookies.removeAllCookies(null); cookies.removeSessionCookies(null); cookies.flush(); } catch (Exception ignored) {}
+        try { WebStorage.getInstance().deleteAllData(); } catch (Exception ignored) {}
+        try { WebViewDatabase database = WebViewDatabase.getInstance(context); database.clearFormData(); database.clearHttpAuthUsernamePassword(); } catch (Exception ignored) {}
+        try { web.clearCache(true); web.clearFormData(); web.clearHistory(); web.clearSslPreferences(); } catch (Exception ignored) {}
     }
 
     private static boolean isConsentTool(android.net.Uri url) {

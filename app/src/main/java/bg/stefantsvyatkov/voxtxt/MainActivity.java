@@ -59,7 +59,21 @@ public class MainActivity extends Activity implements ReaderService.Listener {
     // Off, while a document is being read, while a web page is, or both.
     private static final String[] KEEP_SCREEN_VALUES = {"off", "documents", "web", "both"};
     private static final String STATE_RESUME_AFTER_RECREATE = "resume_after_recreate";
+    // Which settings page is open, or -1 for none. One line of navigation state, and the app has no other:
+    // every screen here is built by hand and there is no back stack to remember it.
+    //
+    // Written when a settings page opens and cleared when it closes, so it is simply true for as long as the
+    // page is on the screen. That is what makes it reliable: a screen rebuilt once finds it, a screen rebuilt
+    // twice finds it too, and it needs no timer and no guess about how long a rebuild ought to take. It has
+    // to be in the settings rather than in the bundle the screen hands on, because changing the language
+    // below Android 13 goes through a route that hands nothing on.
     private static final String PENDING_CATEGORY = "pending_settings_category";
+    // False in a process that has just been started, true in one that was already running. Nothing else can
+    // tell a screen rebuilt under a live app from a screen built after the app was killed and opened again,
+    // and the two want opposite things from the note above: a rebuild should land back on the settings page,
+    // and a fresh start should land on the reader, whatever page the app happened to be showing when it was
+    // last killed. A static outlives an activity and dies with the process, which is exactly the question.
+    private static boolean processAlreadyRunning;
     private static final String DOCUMENT_PREFS = "reader_documents";
     private static final String[] CYRILLIC_LANGUAGES = {"bg", "ru", "uk", "sr", "mk", "be"};
     private static final String[] CENTRAL_EUROPEAN_LANGUAGES = {"cs", "sk", "pl", "hu", "sl", "hr", "ro", "sq"};
@@ -68,7 +82,15 @@ public class MainActivity extends Activity implements ReaderService.Listener {
     private TextView appHeading, title, status, body, durationLabel;
     private boolean resumed;
     private ImageButton voiceButton, previous, play, next, sleepButton;
-    private Button sleepRewindButton;
+    private Button sleepTimerButton, sleepReturnButton;
+    private LinearLayout playerPanel;
+    // The last thing the timer button said while a timer was running, kept word for word. The seconds between
+    // the time running out and the sentence ending go on saying it, so that nothing changes in front of the
+    // reader while the reading is finishing its sentence.
+    private String lastTimerLabel;
+    // What the timer button last said while a timer was running. Held so that the seconds between the time
+    // running out and the sentence ending can go on saying it, even if the screen is rebuilt inside them.
+    private int shownTimerMinutes = 1;
     private SeekBar bookProgress;
     private ScrollView scroll;
     private View appRoot;
@@ -124,7 +146,6 @@ public class MainActivity extends Activity implements ReaderService.Listener {
         RecentDocument(String uri, String name, String text, boolean plainTextFile) { this.uri = uri; this.name = name; this.text = text; this.plainTextFile = plainTextFile; }
     }
     private class AccessibleSpinner extends Spinner {
-        private boolean selectionFromPopup;
         AccessibleSpinner(Context context) {
             super(context);
             // The platform draws a bare arrow at the right and nothing else, so the control reads as a
@@ -138,8 +159,7 @@ public class MainActivity extends Activity implements ReaderService.Listener {
             setPadding(dp(12), dp(12), dp(12), dp(12));
             setGravity(Gravity.CENTER_VERTICAL | Gravity.START);
         }
-        @Override public boolean performClick() { selectionFromPopup = true; spinnerPopupOpening = true; return super.performClick(); }
-        boolean consumePopupSelection() { boolean value = selectionFromPopup; selectionFromPopup = false; return value; }
+        @Override public boolean performClick() { spinnerPopupOpening = true; return super.performClick(); }
     }
     private class PercentSeekBar extends SeekBar {
         PercentSeekBar(Context context) { super(context); setMax(100); }
@@ -206,17 +226,22 @@ public class MainActivity extends Activity implements ReaderService.Listener {
         if (Build.VERSION.SDK_INT >= 33 && checkSelfPermission(Manifest.permission.POST_NOTIFICATIONS) != PackageManager.PERMISSION_GRANTED)
             requestPermissions(new String[]{Manifest.permission.POST_NOTIFICATIONS}, 11);
         holdFirstFrame();
-        if (handleIncoming(getIntent())) return;
-        if (restoreLastPage()) return;
-        String last = documents().getString("last_uri", "");
-        if (last.isEmpty()) markReady(); else loadUri(Uri.parse(last), false);
+        // Whatever was open comes back first, and the settings page is put on top of it afterwards. The
+        // three ways in used to return outright, and the two of them that are not the plain document - a web
+        // page restored from the cache, and a file handed in from outside - carried the return past the
+        // settings page entirely: choosing a theme with a web page open landed on the page, and the note
+        // saying which settings page to reopen was left behind in the settings to surprise a later start.
+        if (!handleIncoming(getIntent()) && !restoreLastPage()) {
+            String last = documents().getString("last_uri", "");
+            if (last.isEmpty()) markReady(); else loadUri(Uri.parse(last), false);
+        }
         // A theme or a language chosen inside the settings rebuilds the screen; the page being looked at is
         // opened again, so that choosing does not throw the reader out to the book.
-        int pending = getSettings().getInt(PENDING_CATEGORY, -1);
-        if (pending >= 0) {
-            getSettings().edit().remove(PENDING_CATEGORY).apply();
-            getWindow().getDecorView().post(() -> { markReady(); showSettingsCategory(pending); });
-        }
+        boolean rebuilt = processAlreadyRunning;
+        processAlreadyRunning = true;
+        if (!rebuilt) forgetPendingCategory();
+        final int openSettingsPage = rebuilt ? getSettings().getInt(PENDING_CATEGORY, -1) : -1;
+        if (openSettingsPage >= 0) getWindow().getDecorView().post(() -> { markReady(); showSettingsCategory(openSettingsPage); });
     }
     // A web page shared from a browser, or a text file opened from a file manager. Anything else falls through
     // to the book that was open last.
@@ -239,6 +264,13 @@ public class MainActivity extends Activity implements ReaderService.Listener {
             return false;
         }
         if (Intent.ACTION_SEND.equals(intent.getAction())) {
+            // A shared file beats shared text, and it is asked about first for that reason. Some apps send
+            // both - a document with a line of its own about it - and when a file has arrived, reading the
+            // file is what was being asked for. It is handed to the same loadUri that Open with uses, so a
+            // book shared from a cloud drive is opened exactly as one chosen from a file manager: the format
+            // decided by what is inside it, the same cache, the same message if it turns out to be unreadable.
+            Uri file = sharedFile(intent);
+            if (file != null) { resumeAfterFilePickerLoad = true; loadUri(file, true); return true; }
             String shared = intent.getStringExtra(Intent.EXTRA_TEXT);
             String address = ArticleReader.firstUrl(shared);
             if (!address.isEmpty()) { loadArticle(address, true); return true; }
@@ -246,6 +278,16 @@ public class MainActivity extends Activity implements ReaderService.Listener {
             toast(getString(R.string.no_address_shared));
         }
         return false;
+    }
+
+    // Where a shared file hides. It travels as a stream rather than as text, and a few senders put it in the
+    // intent's own data instead, so both are looked at. Nothing here decides what the file is.
+    private Uri sharedFile(Intent intent) {
+        try {
+            android.os.Parcelable stream = intent.getParcelableExtra(Intent.EXTRA_STREAM);
+            if (stream instanceof Uri) return (Uri)stream;
+        } catch (Exception ignored) {}
+        return intent.getData();
     }
 
     private void buildUi() {
@@ -286,7 +328,7 @@ public class MainActivity extends Activity implements ReaderService.Listener {
         transitionsRunning = 0;
         scroll.addOnLayoutChangeListener((v, l, t, r2, b2, ol, ot, or2, ob) -> scheduleLineFit());
 
-        LinearLayout playerPanel = new LinearLayout(this); playerPanel.setOrientation(LinearLayout.VERTICAL); playerPanel.setGravity(Gravity.BOTTOM); playerPanel.setPadding(dp(12), 0, dp(12), 0); playerPanel.setBackgroundColor(appColor(R.color.panel_bg));
+        playerPanel = new LinearLayout(this); playerPanel.setOrientation(LinearLayout.VERTICAL); playerPanel.setGravity(Gravity.BOTTOM); playerPanel.setPadding(dp(12), 0, dp(12), 0); playerPanel.setBackgroundColor(appColor(R.color.panel_bg));
         TextView progressValue = addSliderHeader(playerPanel, R.string.book_progress, 17, 0);
         durationLabel = sliderHeadingName;
         bookProgress = new BookProgressSeekBar(this); thicken(bookProgress);
@@ -301,17 +343,32 @@ public class MainActivity extends Activity implements ReaderService.Listener {
             public void onProgressChanged(SeekBar seekBar, int progress, boolean fromUser) { updateBookProgressDescription(progress); if (fromUser && !updatingBookProgress && !draggingBookProgress) seekToBookPercent(progress, false); }
         });
         LinearLayout playerButtons = new LinearLayout(this); playerButtons.setGravity(Gravity.CENTER);
-        voiceButton = largeIconButton(R.drawable.ic_voice, R.string.choose_voice); previous = largeIconButton(R.drawable.ic_previous, R.string.previous_sentence); play = largeIconButton(R.drawable.ic_play, R.string.play_sentence); next = largeIconButton(R.drawable.ic_next, R.string.next_sentence); sleepButton = largeIconButton(R.drawable.ic_sleep, R.string.open_sleep_timer); sleepRewindButton = button("");
+        voiceButton = largeIconButton(R.drawable.ic_voice, R.string.choose_voice); previous = largeIconButton(R.drawable.ic_previous, R.string.previous_sentence); play = largeIconButton(R.drawable.ic_play, R.string.play_sentence); next = largeIconButton(R.drawable.ic_next, R.string.next_sentence); sleepButton = largeIconButton(R.drawable.ic_sleep, R.string.open_sleep_timer); sleepTimerButton = button(""); sleepReturnButton = button("");
         // The page opens on the settings that belong to what is open right now, which is nearly always the
         // set the reader came to change.
         voiceButton.setOnClickListener(v -> { pendingVoice.clear(); showVoiceSettings(fromWeb ? WEB_PROFILE : ""); }); sleepButton.setOnClickListener(v -> showSleepDialog());
-        sleepRewindButton.setOnClickListener(v -> {
+        // One button, two offers, because they are the same offer at two moments: while a timer is running it
+        // calls the timer off, and once one has run out it starts another. It keeps its place through both.
+        sleepTimerButton.setOnClickListener(v -> {
             if (reader == null) return;
             // Only the timer is called off. A book that is reading carries on reading; the timer was the thing
-            // that was no longer wanted, not the book.
-            if (reader.sleepRemainingMillis() > 0) { getSettings().edit().putInt("sleep_choice", 0).apply(); reader.setSleepMinutes(0); updateSleepRow(); }
-            else reader.rewindCompletedSleepTimer();
-        }); sleepRewindButton.setVisibility(View.GONE);
+            // that was no longer wanted, not the book. A timer whose time is up but whose last sentence is
+            // still being spoken is called off here too - the stop it is owed is what is being refused.
+            if (reader.sleepRemainingMillis() > 0 || reader.isStoppingAtSentenceEnd()) {
+                getSettings().edit().putInt("sleep_choice", 0).apply(); reader.setSleepMinutes(0); updateSleepRow(); return;
+            }
+            // The same length again, because a reader who set thirty minutes and wants more of the book wants
+            // another thirty. A timer over a stopped reading would count down over silence, so the reading
+            // starts with it; setSleepMinutes takes the position it is to return to at that moment.
+            int minutes = reader.getCompletedSleepMinutes();
+            if (minutes <= 0) return;
+            getSettings().edit().putInt("sleep_choice", minutes).apply();
+            reader.setSleepMinutes(minutes);
+            if (!reader.isPlaying()) reader.play();
+            updateSleepRow();
+        }); sleepTimerButton.setVisibility(View.GONE);
+        sleepReturnButton.setOnClickListener(v -> { if (reader != null) reader.rewindCompletedSleepTimer(); });
+        sleepReturnButton.setVisibility(View.GONE);
         playerPanel.addView(bookProgress, new LinearLayout.LayoutParams(-1, -2));
         attachSeekButton(previous, -1);
         play.setOnClickListener(v -> { if (reader == null) return; cancelAutomaticResume(true); if (reader.isPlaying()) reader.pause(); else reader.play(); });
@@ -321,20 +378,44 @@ public class MainActivity extends Activity implements ReaderService.Listener {
         LinearLayout.LayoutParams buttonRow = new LinearLayout.LayoutParams(-1, dp(64));
         playerPanel.addView(playerButtons, buttonRow);
         LinearLayout.LayoutParams rewindRow = new LinearLayout.LayoutParams(-1, -2); rewindRow.setMargins(0, dp(16), 0, 0);
-        playerPanel.addView(sleepRewindButton, rewindRow);
+        playerPanel.addView(sleepTimerButton, rewindRow);
+        // Two buttons of the same kind stand one on the other with nothing between them, which is the rule
+        // everywhere else in the app. The panel takes the height its rows need, so the reading gives up the
+        // space this asks for and takes it back when the offer goes.
+        playerPanel.addView(sleepReturnButton, new LinearLayout.LayoutParams(-1, -2));
         // The panel takes the height its own rows need instead of a number fixed in advance, so it grows with
         // the timer button and with a larger interface text size rather than cutting either off.
         playerPanel.setLayoutTransition(collapseTransition(true));
         if (readyToShow) root.setLayoutTransition(collapseTransition(false));
         LinearLayout.LayoutParams panelParams = new LinearLayout.LayoutParams(-1, -2); panelParams.setMargins(0, 0, 0, 0); root.addView(playerPanel, panelParams); setContentView(root); setTitle(getString(R.string.app_name)); applyScreenSetting(); updateControls(); if (reader != null) showCurrent(reader.getCurrent(), reader.getCount()); root.requestApplyInsets();
     }
+    // The panel under the player owns the buttons that come and go, so it animates both directions: a button
+    // arriving and a button leaving, and the rows around either one moving to make room. Everywhere else only
+    // the leaving is animated, which is what the argument means.
+    //
+    // The arrival used to be instant here too, and with one button that read as quick rather than abrupt -
+    // there was nothing above it to be pushed. There is now: the return button arrives underneath a timer
+    // button that is staying put, and the reading above gives up a line for it. Snapping that into place was
+    // the one movement left that could be seen happening.
+    //
+    // Nothing is asked of the system about whether to animate. A phone with animations turned off in the
+    // accessibility settings scales every animator to zero, so all of this arrives instantly there by itself.
     private android.animation.LayoutTransition collapseTransition(boolean owningTheButton) {
         android.animation.LayoutTransition transition = new android.animation.LayoutTransition();
-        transition.disableTransitionType(android.animation.LayoutTransition.APPEARING);
-        transition.disableTransitionType(android.animation.LayoutTransition.CHANGE_APPEARING);
-        if (!owningTheButton) transition.disableTransitionType(android.animation.LayoutTransition.DISAPPEARING);
+        if (!owningTheButton) {
+            transition.disableTransitionType(android.animation.LayoutTransition.APPEARING);
+            transition.disableTransitionType(android.animation.LayoutTransition.CHANGE_APPEARING);
+            transition.disableTransitionType(android.animation.LayoutTransition.DISAPPEARING);
+        } else {
+            transition.enableTransitionType(android.animation.LayoutTransition.APPEARING);
+            transition.enableTransitionType(android.animation.LayoutTransition.CHANGE_APPEARING);
+        }
         transition.enableTransitionType(android.animation.LayoutTransition.CHANGING);
         transition.setDuration(200);
+        // Every one of them starts at once. Left to itself a transition waits for the other half to finish
+        // before it begins, so a button arriving would be seen landing after the space had already opened.
+        transition.setStartDelay(android.animation.LayoutTransition.APPEARING, 0);
+        transition.setStartDelay(android.animation.LayoutTransition.CHANGE_APPEARING, 0);
         transition.setStartDelay(android.animation.LayoutTransition.DISAPPEARING, 0);
         transition.setStartDelay(android.animation.LayoutTransition.CHANGE_DISAPPEARING, 0);
         transition.setStartDelay(android.animation.LayoutTransition.CHANGING, 0);
@@ -396,7 +477,12 @@ public class MainActivity extends Activity implements ReaderService.Listener {
     private Button button(String value) {
         Button b = new Button(this); b.setText(value); b.setMinimumHeight(dp(56)); b.setTextSize(uiSize(labelTextSize())); b.setAllCaps(false);
         b.setBackgroundTintList(android.content.res.ColorStateList.valueOf(appColor(R.color.button_bg)));
-        b.setTextColor(appColor(R.color.button_text));
+        // Two states for the lettering, one colour for the fill. A button used to be given a single colour
+        // for each, so one that could not be pressed looked exactly like one that could. Greying the fill as
+        // well was tried and taken out again: the row of buttons stops looking like a row of buttons.
+        b.setTextColor(new android.content.res.ColorStateList(
+            new int[][]{{-android.R.attr.state_enabled}, {}},
+            new int[]{appColor(R.color.button_text_disabled), appColor(R.color.button_text)}));
         return b;
     }
     private ImageButton imageButton(int icon, int description) { ImageButton b = new ImageButton(this); b.setImageResource(icon); b.setScaleType(ImageView.ScaleType.CENTER_INSIDE); b.setImageTintList(android.content.res.ColorStateList.valueOf(appColor(R.color.text_primary))); b.setContentDescription(getString(description)); b.setBackgroundTintList(android.content.res.ColorStateList.valueOf(Color.TRANSPARENT)); b.setPadding(dp(7), dp(7), dp(7), dp(7)); return b; }
@@ -894,31 +980,93 @@ public class MainActivity extends Activity implements ReaderService.Listener {
     }
 
     @Override public void onPlaybackState(int index, int count, boolean playing) { runOnUiThread(() -> { if (playing && (pausedAutomaticallyOutsideReader || automaticResumePending)) cancelAutomaticResume(true); showCurrent(index, count); updatePlayButton(playing); applyScreenSetting(); updateSleepRow(); updateControls(); }); }
-    // The row under the player has one place and three states: a running timer offers to be called off, an
-    // expired one offers to go back to where it started, and the rest of the time it is empty but keeps its
-    // height, so nothing on the screen moves. The two offers never arrive together - starting a timer clears
-    // the return, and the return only appears once a timer has run out.
+    // Two places under the player. The upper one belongs to the timer for as long as there is one to speak
+    // of: it offers to call a running timer off, and once one has run out it offers another of the same
+    // length. The lower one appears only after a timer has run out, and only ever offers the way back.
+    //
+    // Which is what keeps the player still. The timer runs out several seconds before the reading stops,
+    // because the sentence being spoken is allowed to finish, and a row that emptied at the first of those
+    // moments and filled again at the second sent the player down and back up for no reason anyone could
+    // see. The upper button holds its place across the whole of it and only changes what it says; the one
+    // movement left is the lower button arriving, which the reading gives up a line for.
     private void updateSleepRow() {
         sleepRowHandler.removeCallbacksAndMessages(null);
         long remaining = reader == null ? 0 : reader.sleepRemainingMillis();
         if (remaining > 0) {
             // Rounded up, so a timer just set for thirty says thirty, and the last seconds say one minute
             // rather than none.
-            int minutes = (int)((remaining + 59_999L) / 60_000L);
-            sleepRewindButton.setText(getResources().getQuantityString(R.plurals.cancel_sleep_timer, minutes, minutes));
-            sleepRewindButton.setVisibility(View.VISIBLE);
-            // Woken exactly when the minute shown changes, instead of a tick running the whole time. The text
+            // Minutes while there is more than a minute of it, and whole seconds once there is not. A
+            // number that has stopped moving says less the closer the end gets, and the last minute of a
+            // sleep timer is the minute a reader is most likely to be watching it.
+            String label;
+            long changesAt;
+            if (remaining >= 60_000L) {
+                int minutes = (int)((remaining + 59_999L) / 60_000L);
+                label = getResources().getQuantityString(R.plurals.cancel_sleep_timer, minutes, minutes);
+                // The last minute is left at the moment 59 seconds would be shown, not at zero, so the
+                // handover from one unit to the other is a step of one second like any other.
+                changesAt = minutes > 1 ? (minutes - 1) * 60_000L : 59_999L;
+            } else {
+                // Whole seconds actually left, so the first of them is 59 and not 60 - rounding up here made
+                // the handover from minutes show a minute a second time under another name. The last second
+                // is held at one rather than allowed to reach nought: at nought the time is up and the branch
+                // below has it.
+                int whole = (int)(remaining / 1000L);
+                int seconds = Math.max(1, whole);
+                label = getResources().getQuantityString(R.plurals.cancel_sleep_timer_seconds, seconds, seconds);
+                changesAt = whole * 1000L;
+            }
+            lastTimerLabel = label;
+            setTimerLabelWithoutMoving(label);
+            sleepTimerButton.setVisibility(View.VISIBLE);
+            sleepReturnButton.setText(""); sleepReturnButton.setVisibility(View.GONE);
+            // Woken exactly when the number shown changes, instead of a tick running the whole time. The text
             // is not a live region, so a screen reader reads it when it is reached and not on every change.
-            sleepRowHandler.postDelayed(this::updateSleepRow, remaining - (minutes - 1) * 60_000L + 200L);
+            // A timer over a stopped reading is not going down, so there is nothing to wake up for; the next
+            // Play reports itself and the row is built again then.
+            if (reader != null && reader.isPlaying()) sleepRowHandler.postDelayed(this::updateSleepRow, remaining - changesAt + 50L);
+            return;
+        }
+        // The time is up and the last sentence is still being spoken. Nothing changes yet: the button goes on
+        // offering to call the timer off, which is still exactly what pressing it would do.
+        if (reader != null && reader.isStoppingAtSentenceEnd()) {
+            setTimerLabelWithoutMoving(lastTimerLabel != null ? lastTimerLabel
+                : getResources().getQuantityString(R.plurals.cancel_sleep_timer_seconds, 1, 1));
+            sleepTimerButton.setVisibility(View.VISIBLE);
+            sleepReturnButton.setText(""); sleepReturnButton.setVisibility(View.GONE);
             return;
         }
         if (reader != null && reader.isSleepRewindAvailable()) {
+            // The length the timer was set for, not the last thing the button happened to be saying.
             int minutes = reader.getCompletedSleepMinutes();
-            sleepRewindButton.setText(getResources().getQuantityString(R.plurals.rewind_sleep_minutes, minutes, minutes));
-            sleepRewindButton.setVisibility(View.VISIBLE);
+            lastTimerLabel = null;
+            sleepTimerButton.setText(getResources().getQuantityString(R.plurals.new_sleep_timer, minutes, minutes));
+            sleepTimerButton.setVisibility(View.VISIBLE);
+            sleepReturnButton.setText(getResources().getQuantityString(R.plurals.rewind_sleep_minutes, minutes, minutes));
+            sleepReturnButton.setVisibility(View.VISIBLE);
             return;
         }
-        sleepRewindButton.setText(""); sleepRewindButton.setVisibility(View.GONE);
+        lastTimerLabel = null;
+        sleepTimerButton.setText(""); sleepTimerButton.setVisibility(View.GONE);
+        sleepReturnButton.setText(""); sleepReturnButton.setVisibility(View.GONE);
+    }
+    // A number ticking down once a second is a change of text, not a change of the screen, and it must not
+    // be treated as one. The button keeps its place and its size in every case that matters, but a longer
+    // word at a large interface text size can wrap to a second line, and that is a change of height - which
+    // the panel's transition would animate, so the button would slide a little every second.
+    //
+    // The transition is lifted for the length of the assignment and put back on the next turn of the loop,
+    // after the layout it caused has been done. Only the ticking goes through here. The one change that is a
+    // real change - the offer becoming a new timer as the return button arrives beneath it - is left to the
+    // transition on purpose, so that the reading, the button and the player all move once, together.
+    private void setTimerLabelWithoutMoving(String label) {
+        if (label.contentEquals(sleepTimerButton.getText())) return;
+        if (playerPanel == null) { sleepTimerButton.setText(label); return; }
+        final LinearLayout panel = playerPanel;
+        final android.animation.LayoutTransition held = panel.getLayoutTransition();
+        panel.setLayoutTransition(null);
+        sleepTimerButton.setText(label);
+        panel.post(() -> { if (panel.getLayoutTransition() == null) panel.setLayoutTransition(held); });
     }
     @Override public void onPlaybackError(String message) { runOnUiThread(() -> toast(message)); }
     private void showCurrent(int index, int count) {
@@ -1386,7 +1534,13 @@ public class MainActivity extends Activity implements ReaderService.Listener {
         if (durationLabel == null) return;
         long done = reader == null ? -1 : reader.millisBefore(reader.getCurrent());
         long total = reader == null ? -1 : reader.millisTotal();
-        if (done < 0 || total <= 0 || !reader.hasDurations()) { durationLabel.setText(R.string.book_progress); return; }
+        boolean measured = done >= 0 && total > 0 && reader != null && reader.hasDurations();
+        // A measurement answers the same question in better units, so the percentage beside it is one number
+        // too many and goes. Only the written figure goes: the bar keeps its own percentage and still says it
+        // on every step, because a percentage is what a bar of this kind is worth moving in.
+        TextView percentValue = sliderValues.get(bookProgress);
+        if (percentValue != null) percentValue.setVisibility(measured ? View.GONE : View.VISIBLE);
+        if (!measured) { durationLabel.setText(R.string.book_progress); return; }
         durationLabel.setText(getString(R.string.time_position, spokenTime(done), spokenTime(total)));
     }
     // Hours and minutes in the words the language uses for them, one hour and two hours being different words
@@ -1435,10 +1589,19 @@ public class MainActivity extends Activity implements ReaderService.Listener {
     private void showBookmarks() {
         if (reader == null) return;
         LinearLayout box = listPage();
-        Button add = button(getString(R.string.add_bookmark));
-        add.setOnClickListener(v -> { addBookmark(); showBookmarks(); });
-        box.addView(add, new LinearLayout.LayoutParams(-1, -2));
         JSONArray marks = bookmarks();
+        java.util.List<String> keys = new ArrayList<>();
+        for (int i = 0; i < marks.length(); i++) {
+            JSONObject mark = marks.optJSONObject(i);
+            if (mark != null) keys.add(String.valueOf(mark.optInt("sentence")));
+        }
+        if (keys.isEmpty()) leaveSelection();
+        // Adding one is not something to be doing while taking others away, so the offer steps aside.
+        if (!selecting) {
+            Button add = button(getString(R.string.add_bookmark));
+            add.setOnClickListener(v -> { addBookmark(); showBookmarks(); });
+            box.addView(add, new LinearLayout.LayoutParams(-1, -2));
+        }
         if (marks.length() == 0) {
             TextView empty = emptyNotice(getString(R.string.no_bookmarks));
             box.addView(empty, below(dp(24)));
@@ -1448,6 +1611,7 @@ public class MainActivity extends Activity implements ReaderService.Listener {
         for (int i = 0; i < marks.length(); i++) {
             JSONObject mark = marks.optJSONObject(i); if (mark == null) continue;
             int sentence = mark.optInt("sentence"); String name = mark.optString("text");
+            if (selecting) { box.addView(markRow(name, String.valueOf(sentence), keys), below(dp(16))); continue; }
             LinearLayout row = new LinearLayout(this); row.setGravity(Gravity.CENTER_VERTICAL);
             Button open = listRowButton(name, labelTextSize());
             open.setOnClickListener(v -> jumpFromList(sentence));
@@ -1462,7 +1626,18 @@ public class MainActivity extends Activity implements ReaderService.Listener {
         if (pendingListRow >= 0 && !entries.isEmpty())
             listFocusTarget = entries.get(Math.min(pendingListRow, entries.size() - 1));
         pendingListRow = -1;
-        showListPage(R.string.bookmarks, box);
+        View actions = selecting ? selectionActions(keys, this::showBookmarks, () -> {
+            JSONArray fresh = new JSONArray();
+            for (int i = 0; i < marks.length(); i++) {
+                JSONObject mark = marks.optJSONObject(i);
+                if (mark != null && !markedItems.contains(String.valueOf(mark.optInt("sentence")))) fresh.put(mark);
+            }
+            saveBookmarks(fresh);
+            leaveSelection();
+            showBookmarks();
+        }) : null;
+        showSettingsPage(R.string.bookmarks, box, actions, null, null, null, R.string.apply,
+            keys.isEmpty() ? null : selectionModeButton(this::showBookmarks));
     }
 
     private void showSearchDialog() {
@@ -1784,6 +1959,77 @@ public class MainActivity extends Activity implements ReaderService.Listener {
     private LinearLayout.LayoutParams below(int topMargin) {
         LinearLayout.LayoutParams params = new LinearLayout.LayoutParams(-1, -2); params.setMargins(0, topMargin, 0, 0); return params;
     }
+    // Marking, and taking away what has been marked. The three lists that let a single entry be deleted -
+    // bookmarks, recent documents and recent pages - all offer it, and all offer it the same way, because
+    // they are the same list with different things in it.
+    //
+    // What is marked is held here rather than in the views, because every one of these pages is rebuilt from
+    // its stored list whenever anything changes on it. A tick kept in a checkbox would be thrown away with
+    // the checkbox; a tick kept as the key of a row survives the rebuild and is put back on the row it
+    // belongs to. The key is whatever already identifies the entry - the address of a document or a page,
+    // the sentence number of a bookmark - so nothing new has to be invented to say which row is which.
+    private boolean selecting;
+    private final java.util.Set<String> markedItems = new java.util.HashSet<>();
+    private Button selectAllButton, deleteMarkedButton;
+
+    private boolean focusSelectionButton;
+    private void leaveSelection() { selecting = false; markedItems.clear(); selectAllButton = null; deleteMarkedButton = null; }
+
+    // Top right, beside the heading. No fill, because a filled button there would carry the weight of the
+    // page's main action and this is a way of working rather than a thing to do.
+    private Button selectionModeButton(Runnable rebuild) {
+        Button b = compactButton(getString(selecting ? R.string.cancel_selection : R.string.select_items));
+        b.setBackgroundTintList(android.content.res.ColorStateList.valueOf(Color.TRANSPARENT));
+        android.util.TypedValue touch = new android.util.TypedValue(); getTheme().resolveAttribute(android.R.attr.selectableItemBackground, touch, true);
+        b.setBackgroundResource(touch.resourceId);
+        b.setTextColor(appColor(R.color.select_action));
+        b.setPadding(dp(12), dp(8), dp(12), dp(8)); b.setMinimumHeight(dp(56));
+        b.setOnClickListener(v -> { if (selecting) leaveSelection(); else selecting = true; focusSelectionButton = true; rebuild.run(); });
+        // Pressing it rebuilds the page, so the button pressed is gone by the time anything can be read out.
+        // The reader is put back on the one that took its place, which is where the finger already is and
+        // where the way out of the mode is - not sent to the top to walk down the page again.
+        if (focusSelectionButton) { focusSelectionButton = false; listFocusTarget = b; }
+        return b;
+    }
+
+    // The entry becomes the tick. Not a tick placed next to it - the row is one thing and pressing anywhere
+    // along it marks it, which is also what makes the screen reader say the name and its state together.
+    private CheckBox markRow(String name, String key, java.util.List<String> keys) {
+        CheckBox box = new CheckBox(this);
+        box.setText(name); box.setTextSize(uiSize(labelTextSize())); box.setTextColor(appColor(R.color.text_primary));
+        box.setMinimumHeight(listRowHeight());
+        box.setPadding(box.getPaddingLeft() + dp(4), dp(14), listRowSidePadding(), dp(14));
+        box.setChecked(markedItems.contains(key));
+        box.setOnCheckedChangeListener((view, on) -> {
+            if (on) markedItems.add(key); else markedItems.remove(key);
+            updateSelectionButtons(keys);
+        });
+        return box;
+    }
+
+    // The two that appear at the foot of the page while marking. They stand one on the other and touch, the
+    // rule everywhere else for two buttons of the same kind.
+    private View selectionActions(java.util.List<String> keys, Runnable rebuild, Runnable deleteAction) {
+        LinearLayout box = new LinearLayout(this); box.setOrientation(LinearLayout.VERTICAL);
+        selectAllButton = button("");
+        selectAllButton.setOnClickListener(v -> {
+            if (markedItems.containsAll(keys)) markedItems.clear(); else markedItems.addAll(keys);
+            rebuild.run();
+        });
+        deleteMarkedButton = button(getString(R.string.delete));
+        deleteMarkedButton.setOnClickListener(v -> { if (!markedItems.isEmpty()) deleteAction.run(); });
+        box.addView(selectAllButton, new LinearLayout.LayoutParams(-1, -2));
+        box.addView(deleteMarkedButton, new LinearLayout.LayoutParams(-1, -2));
+        updateSelectionButtons(keys);
+        return box;
+    }
+    private void updateSelectionButtons(java.util.List<String> keys) {
+        if (selectAllButton != null)
+            selectAllButton.setText(getString(!keys.isEmpty() && markedItems.containsAll(keys) ? R.string.clear_selection : R.string.select_all));
+        if (deleteMarkedButton == null) return;
+        deleteMarkedButton.setEnabled(!markedItems.isEmpty());
+    }
+
     private LinearLayout listPage() { LinearLayout box = new LinearLayout(this); box.setOrientation(LinearLayout.VERTICAL); box.setPadding(dp(4), 0, dp(4), 0); return box; }
     private TextView emptyNotice(String message) { return label(message, 20, false); }
     private void showListPage(int headingResource, LinearLayout box) { showSettingsPage(headingResource, box, null, null, null); }
@@ -1840,6 +2086,9 @@ public class MainActivity extends Activity implements ReaderService.Listener {
     }
     private void showSettingsCategory(int which) {
         android.content.SharedPreferences p = getSettings();
+        // This page is open from here until it is closed, and that is the whole of what has to be remembered
+        // for a rebuild to put the reader back where they were.
+        p.edit().putInt(PENDING_CATEGORY, which).apply();
         pausePlaybackOutsideReader(); sliderValues.clear();
         LinearLayout box = new LinearLayout(this); box.setOrientation(LinearLayout.VERTICAL);
         final int[] previewScale = {p.getInt("interface_scale", 100)};
@@ -1912,6 +2161,10 @@ public class MainActivity extends Activity implements ReaderService.Listener {
             preventDeviceAutoplay.setTextSize(uiSize(labelTextSize())); preventDeviceAutoplay.setChecked(p.getBoolean("prevent_device_autoplay", false));
             preventDeviceAutoplay.setOnCheckedChangeListener((view, on) -> p.edit().putBoolean("prevent_device_autoplay", on).apply());
             box.addView(preventDeviceAutoplay, field(dp(8)));
+            CheckBox skipDecorative = new CheckBox(this); skipDecorative.setText(R.string.skip_decorative);
+            skipDecorative.setTextSize(uiSize(labelTextSize())); skipDecorative.setChecked(p.getBoolean(ReaderService.SKIP_DECORATIVE, false));
+            skipDecorative.setOnCheckedChangeListener((view, on) -> p.edit().putBoolean(ReaderService.SKIP_DECORATIVE, on).apply());
+            box.addView(skipDecorative, field(dp(8)));
             CheckBox webFromStart = new CheckBox(this); webFromStart.setText(R.string.web_from_start);
             webFromStart.setTextSize(uiSize(labelTextSize())); webFromStart.setChecked(p.getBoolean("web_from_start", true));
             webFromStart.setOnCheckedChangeListener((view, on) -> p.edit().putBoolean("web_from_start", on).apply());
@@ -1958,15 +2211,21 @@ public class MainActivity extends Activity implements ReaderService.Listener {
         }
         return android.content.res.Resources.getSystem().getConfiguration().getLocales().get(0).getLanguage();
     }
+    private void forgetPendingCategory() { if (getSettings().contains(PENDING_CATEGORY)) getSettings().edit().remove(PENDING_CATEGORY).apply(); }
     private void rebuildForSettingsChange(int category, boolean rebuildHere) {
         resumeAfterRecreate = pausedAutomaticallyOutsideReader;
         pausedAutomaticallyOutsideReader = false;
         subpageCloseAction = null; subpageBackTarget = null;
         keepReadingAfterFinish = true;
-        // Kept in the settings rather than in the bundle the screen hands on. A language change is carried out
-        // by Android itself, which restarts the screen in its own time and by its own route - and a screen
-        // restarted that way never sees the bundle, which is why choosing a language landed on the book.
-        getSettings().edit().putInt(PENDING_CATEGORY, category).apply();
+        // Nothing is written down here. The page being looked at has already said which page it is, and the
+        // rebuild about to happen will find that and open it again.
+        //
+        // The screen is rebuilt rather than repainted because the two themes are built on different platform
+        // parents - Material Light and Material - and everything the platform draws for the app comes from
+        // there: the dialogs, the dropdown popups, the touch highlight on a row. Setting a theme over a
+        // window that is already dressed merges into what is there instead of replacing it, so those would
+        // keep the look of the theme being left behind.
+        //
         // Long enough for the screen reader to finish saying which theme was chosen. Rebuilt on the spot, the
         // screen took the words out of its mouth and started again with the name of the window.
         if (rebuildHere) getWindow().getDecorView().postDelayed(this::recreate, 900);
@@ -2191,7 +2450,12 @@ public class MainActivity extends Activity implements ReaderService.Listener {
     private void configureSpinnerAccessibility(AccessibleSpinner spinner, String[] values, SpinnerSelectionObserver selectionObserver) {
         updateSpinnerDescription(spinner, values[Math.max(0, spinner.getSelectedItemPosition())]);
         spinner.setAccessibilityDelegate(new View.AccessibilityDelegate() { @Override public void onInitializeAccessibilityNodeInfo(View host, android.view.accessibility.AccessibilityNodeInfo info) { super.onInitializeAccessibilityNodeInfo(host, info); info.setCollectionItemInfo(null); if (Build.VERSION.SDK_INT >= 30) info.setStateDescription(null); } });
-        spinner.setOnItemSelectedListener(new AdapterView.OnItemSelectedListener() { public void onNothingSelected(AdapterView<?> parent) {} public void onItemSelected(AdapterView<?> parent, View view, int position, long id) { updateSpinnerDescription(spinner, values[position]); if (selectionObserver != null) selectionObserver.onSelected(position); if (spinner.consumePopupSelection()) spinner.postDelayed(() -> { View title = spinner.getRootView().findViewById(getResources().getIdentifier("alertTitle", "id", "android")); if (title != null) title.performAccessibilityAction(android.view.accessibility.AccessibilityNodeInfo.ACTION_CLEAR_ACCESSIBILITY_FOCUS, null); spinner.requestFocus(); spinner.performAccessibilityAction(android.view.accessibility.AccessibilityNodeInfo.ACTION_ACCESSIBILITY_FOCUS, null); }, 600L); } });
+                // Choosing a value in a dropdown leaves the focus wherever the screen reader puts it. This used to
+        // reach in and put it back on the spinner after a wait, and the wait was the whole problem: too short
+        // and it cut across what was being said, too long and the reader had moved on, and either way it
+        // sometimes landed and sometimes did not. Three different waits and a retry made it less predictable
+        // rather than more. The reader knows where it is; the app no longer argues with it.
+        spinner.setOnItemSelectedListener(new AdapterView.OnItemSelectedListener() { public void onNothingSelected(AdapterView<?> parent) {} public void onItemSelected(AdapterView<?> parent, View view, int position, long id) { updateSpinnerDescription(spinner, values[position]); if (selectionObserver != null) selectionObserver.onSelected(position); } });
     }
     private void updateSpinnerDescription(Spinner spinner, String value) { spinner.setContentDescription(value); }
     private ArrayList<LanguageOption> buildVoiceLanguages(List<ReaderService.VoiceOption> voices) {
@@ -2237,7 +2501,19 @@ public class MainActivity extends Activity implements ReaderService.Listener {
         if (focusPickedTab && pickedTab != null) { focusPickedTab = false; focusHeading(pickedTab); return; }
         focusPickedTab = false;
     }
-    private void focusHeading(View heading) { heading.postDelayed(() -> heading.performAccessibilityAction(android.view.accessibility.AccessibilityNodeInfo.ACTION_ACCESSIBILITY_FOCUS, null), 220L); }
+    // One wait, one attempt, and never onto the control the reader is already standing on - asking for that
+    // is not a move, but the reader reads the control out a second time for it. Retries and longer waits were
+    // tried on a real phone and made the behaviour less predictable, not more: sometimes the focus arrived,
+    // sometimes it did not, and sometimes everything was said twice. Where the app cannot be sure, it leaves
+    // the reader alone. This is only used where a page has been rebuilt under the reader's feet and the row
+    // it was standing on is gone - after an entry is deleted from a list, and on opening a page.
+    private void focusHeading(View target) {
+        if (target == null) return;
+        target.postDelayed(() -> {
+            if (destroyed || target.getWindowToken() == null || target.isAccessibilityFocused()) return;
+            target.performAccessibilityAction(android.view.accessibility.AccessibilityNodeInfo.ACTION_ACCESSIBILITY_FOCUS, null);
+        }, 220L);
+    }
     private ArrayAdapter<String> themedSpinnerAdapter(String[] values) { return new ArrayAdapter<String>(this, android.R.layout.simple_spinner_item, values) { private View style(View view, boolean dropdown) { if (view instanceof TextView) { ((TextView)view).setTextColor(appColor(R.color.text_primary)); ((TextView)view).setTextSize(uiSize(labelTextSize())); view.setBackgroundColor(appColor(R.color.window_bg)); ((TextView)view).setGravity(Gravity.CENTER_VERTICAL | Gravity.START); view.setPadding(dp(12), dropdown ? dp(12) : 0, dp(12), dropdown ? dp(12) : 0); view.setImportantForAccessibility(dropdown ? View.IMPORTANT_FOR_ACCESSIBILITY_YES : View.IMPORTANT_FOR_ACCESSIBILITY_NO); view.setAccessibilityDelegate(new View.AccessibilityDelegate() { @Override public void onInitializeAccessibilityNodeInfo(View host, android.view.accessibility.AccessibilityNodeInfo info) { super.onInitializeAccessibilityNodeInfo(host, info); info.setCollectionItemInfo(null); } }); } return view; } @Override public View getView(int position, View convertView, ViewGroup parent) { return style(super.getView(position, convertView, parent), false); } @Override public View getDropDownView(int position, View convertView, ViewGroup parent) { View row = style(super.getDropDownView(position, convertView, parent), true); nudgePopupFocus(row); return row; } }; }
     // The platform's popup is left exactly as it is. This only moves the screen reader onto a row of it when
     // the system has not put it on one itself - which is what happens once the list is long enough to scroll,
@@ -2300,21 +2576,57 @@ public class MainActivity extends Activity implements ReaderService.Listener {
         page.setOnApplyWindowInsetsListener((v, insets) -> { v.setPadding(pad, insets.getSystemWindowInsetTop() + dp(10), pad, insets.getSystemWindowInsetBottom() + dp(16)); return insets; });
         LinearLayout bar = new LinearLayout(this); bar.setGravity(Gravity.CENTER_VERTICAL);
         ImageButton back = imageButton(R.drawable.ic_back, R.string.back); back.setOnClickListener(v -> closeRecent()); bar.addView(back, new LinearLayout.LayoutParams(dp(56), dp(56)));
-        TextView heading = label(getString(R.string.recent_books), 24, true); heading.setPadding(dp(8), 0, 0, 0); if (Build.VERSION.SDK_INT >= 28) heading.setAccessibilityHeading(true); bar.addView(heading, new LinearLayout.LayoutParams(0, -2, 1)); page.addView(bar);
+        TextView heading = label(getString(R.string.recent_books), 24, true); heading.setPadding(dp(8), 0, 0, 0); if (Build.VERSION.SDK_INT >= 28) heading.setAccessibilityHeading(true); bar.addView(heading, new LinearLayout.LayoutParams(0, -2, 1));
+        java.util.List<String> keys = recentKeys(recentTab);
+        if (keys.isEmpty()) leaveSelection();
+        else bar.addView(selectionModeButton(this::showRecent), new LinearLayout.LayoutParams(-2, -2));
+        page.addView(bar);
+        // A tab is a different list, and what was marked in one says nothing about the other.
         page.addView(tabRow(new int[]{R.string.documents_section, R.string.pages_section},
             PAGES_LIST.equals(recentTab) ? 1 : 0,
-            index -> { recentTab = index == 1 ? PAGES_LIST : DOCUMENTS_LIST; showRecent(); }),
+            index -> { leaveSelection(); recentTab = index == 1 ? PAGES_LIST : DOCUMENTS_LIST; showRecent(); }),
             new LinearLayout.LayoutParams(-1, -2));
         LinearLayout list = new LinearLayout(this); list.setOrientation(LinearLayout.VERTICAL); ScrollView scrolling = new ScrollView(this); scrolling.addView(list); page.addView(scrolling, new LinearLayout.LayoutParams(-1, 0, 1));
-        if (!addRecentSection(list, recentTab, PAGES_LIST.equals(recentTab) ? R.string.remove_page : R.string.remove_book)) {
+        if (!addRecentSection(list, recentTab, PAGES_LIST.equals(recentTab) ? R.string.remove_page : R.string.remove_book, keys)) {
             TextView empty = label(getString(R.string.no_recent), 20, false); list.addView(empty, below(dp(24)));
             // Nothing left where the entry stood, so the reader is put on the line that says so.
             if (pendingListRow >= 0) listFocusTarget = empty;
         }
         pendingListRow = -1;
+        if (selecting) {
+            final String which = recentTab;
+            LinearLayout.LayoutParams actionRow = new LinearLayout.LayoutParams(-1, -2); actionRow.setMargins(0, dp(16), 0, 0);
+            page.addView(selectionActions(keys, this::showRecent, () -> removeManyRecent(which)), actionRow);
+        }
         setContentView(page); page.requestApplyInsets(); focusAfterBuild(heading);
     }
-    private boolean addRecentSection(LinearLayout list, String which, int removeResource) {
+    // The addresses in one of the two lists, in the order they are shown, which is what Select all works on.
+    private java.util.List<String> recentKeys(String which) {
+        java.util.List<String> keys = new ArrayList<>();
+        try {
+            JSONArray recent = new JSONArray(documents().getString(which, "[]"));
+            for (int i = 0; i < Math.min(RECENT_LIMIT, recent.length()); i++) {
+                JSONObject item = recent.optJSONObject(i);
+                if (item != null) keys.add(item.optString("uri"));
+            }
+        } catch (JSONException ignored) {}
+        return keys;
+    }
+    // The list is written once and then each entry is let go of, rather than the file being rewritten for
+    // every one of twenty. What is let go of is the same for one as for many - the permission, the kept copy,
+    // the position and the bookmarks - so forgetBook is asked for each in turn and nothing new is invented.
+    private void removeManyRecent(String which) {
+        try {
+            JSONArray old = new JSONArray(documents().getString(which, "[]")), fresh = new JSONArray();
+            for (int i = 0; i < old.length(); i++)
+                if (!markedItems.contains(old.getJSONObject(i).optString("uri"))) fresh.put(old.getJSONObject(i));
+            documents().edit().putString(which, fresh.toString()).apply();
+        } catch (JSONException e) { toast(getString(R.string.no_recent)); return; }
+        for (String uri : new ArrayList<>(markedItems)) forgetBook(uri);
+        leaveSelection();
+        showRecent();
+    }
+    private boolean addRecentSection(LinearLayout list, String which, int removeResource, java.util.List<String> keys) {
         JSONArray recent;
         try { recent = new JSONArray(documents().getString(which, "[]")); } catch (JSONException e) { return false; }
         int count = Math.min(RECENT_LIMIT, recent.length());
@@ -2324,6 +2636,7 @@ public class MainActivity extends Activity implements ReaderService.Listener {
         for (int i = 0; i < count; i++) {
             JSONObject item = recent.optJSONObject(i); if (item == null) continue;
             String itemUri = item.optString("uri"), name = item.optString("name");
+            if (selecting) { list.addView(markRow(name, itemUri, keys), below(dp(16))); continue; }
             LinearLayout row = new LinearLayout(this); row.setGravity(Gravity.CENTER_VERTICAL);
             Button open = listRowButton(name, labelTextSize());
             open.setOnClickListener(v -> { if (pages) openRecentPage(itemUri); else openRecent(itemUri); });
@@ -2344,6 +2657,8 @@ public class MainActivity extends Activity implements ReaderService.Listener {
     // Leaves whatever subpage is open and puts the reader back on the screen, without touching the document.
     private void returnToReaderScreen() {
         if (!showingRecent) return;
+        forgetPendingCategory();
+        leaveSelection();
         Runnable action = subpageCloseAction; subpageCloseAction = null; if (action != null) action.run();
         showingRecent = false; buildUi(); if (reader != null) reader.setListener(this);
     }
@@ -2368,12 +2683,19 @@ public class MainActivity extends Activity implements ReaderService.Listener {
         showSettingsPage(headingResource, content, bottomExtra, applyAction, closeAction, tabs, R.string.apply);
     }
     private void showSettingsPage(int headingResource, View content, View bottomExtra, Runnable applyAction, Runnable closeAction, View tabs, int applyLabel) {
+        showSettingsPage(headingResource, content, bottomExtra, applyAction, closeAction, tabs, applyLabel, null);
+    }
+    // barAction is a button that goes at the far end of the heading row, after the heading itself, so that it
+    // is reached last of the three and is plainly about the whole page rather than about any row of it.
+    private void showSettingsPage(int headingResource, View content, View bottomExtra, Runnable applyAction, Runnable closeAction, View tabs, int applyLabel, View barAction) {
         setTitle(getString(headingResource));
         showingRecent = true; subpageCloseAction = closeAction; int pad = dp(16);
         LinearLayout page = new LinearLayout(this); page.setOrientation(LinearLayout.VERTICAL); page.setPadding(pad, dp(10), pad, dp(16)); page.setBackgroundColor(appColor(R.color.window_bg));
         page.setOnApplyWindowInsetsListener((v, insets) -> { v.setPadding(pad, insets.getSystemWindowInsetTop() + dp(10), pad, insets.getSystemWindowInsetBottom() + dp(16)); return insets; });
         LinearLayout bar = new LinearLayout(this); bar.setGravity(Gravity.CENTER_VERTICAL); ImageButton back = imageButton(R.drawable.ic_back, R.string.back); back.setOnClickListener(v -> closeRecent()); bar.addView(back, new LinearLayout.LayoutParams(dp(56), dp(56)));
-        TextView heading = label(getString(headingResource), 24, true); heading.setPadding(dp(8), 0, 0, 0); if (Build.VERSION.SDK_INT >= 28) heading.setAccessibilityHeading(true); bar.addView(heading, new LinearLayout.LayoutParams(0, -2, 1)); page.addView(bar);
+        TextView heading = label(getString(headingResource), 24, true); heading.setPadding(dp(8), 0, 0, 0); if (Build.VERSION.SDK_INT >= 28) heading.setAccessibilityHeading(true); bar.addView(heading, new LinearLayout.LayoutParams(0, -2, 1));
+        if (barAction != null) bar.addView(barAction, new LinearLayout.LayoutParams(-2, -2));
+        page.addView(bar);
         // The tabs sit directly under the heading, above everything the page holds, so they are the first
         // thing reached after the title and it is clear that they govern the whole page and not one field.
         if (tabs != null) page.addView(tabs, below(dp(16)));
@@ -2423,6 +2745,8 @@ public class MainActivity extends Activity implements ReaderService.Listener {
     }
     private void closeRecent() {
         if (!showingRecent || loading) return;
+        forgetPendingCategory();
+        leaveSelection();
         Runnable action = subpageCloseAction; subpageCloseAction = null; if (action != null) action.run();
         Runnable back = subpageBackTarget; subpageBackTarget = null;
         if (back != null) { back.run(); return; }

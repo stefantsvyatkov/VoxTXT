@@ -24,6 +24,7 @@ public class ReaderService extends Service implements TextToSpeech.OnInitListene
     private static final String SLEEP_STATE = "sleep_rewind_state";
     private static final String PREVIEW_UTTERANCE = "voice-preview";
     private static final String END_UTTERANCE = "end-of-text";
+    private static final String RESTART_UTTERANCE = "back-to-the-beginning";
     private static final String MEASURE_UTTERANCE = "measure-";
     private static final long PREVIEW_RETRY_MS = 700L;
     private static final String PARAM_VOICE_NAME = "voiceName";
@@ -31,6 +32,9 @@ public class ReaderService extends Service implements TextToSpeech.OnInitListene
     // at all, so a phone that still remembers Vox TXT as the last player gets silence out of it once the
     // book is gone. Kept in settings rather than in memory, because the receiver runs when nothing else does.
     public static final String ARMED = "player_armed";
+    // Shared by documents and by web pages, so it is deliberately not one of the profile keys that
+    // setting() prefixes: decoration gets in the way of listening wherever it was written.
+    public static final String SKIP_DECORATIVE = "skip_decorative";
 
     public interface Listener { void onPlaybackState(int index, int count, boolean playing); void onPlaybackError(String message); void onPreviewState(boolean speaking); void onDurationProgress(int done, int total, boolean running); }
     public class ReaderBinder extends Binder {
@@ -62,6 +66,8 @@ public class ReaderService extends Service implements TextToSpeech.OnInitListene
     private final Handler focusHandler = new Handler(Looper.getMainLooper());
     private final Handler lifecycleHandler = new Handler(Looper.getMainLooper());
     private boolean reachedEnd;
+    // Set by the Play that follows the end of a document, and cleared by the announcement it asks for.
+    private boolean announceRestart;
     private final ArrayList<Range> sentences = new ArrayList<>();
     private final ArrayList<Integer> paragraphStart = new ArrayList<>();
     private TextToSpeech tts, previewTts, previewSpeaker;
@@ -84,10 +90,13 @@ public class ReaderService extends Service implements TextToSpeech.OnInitListene
     private int current;
     private boolean ready, playing;
     private long sleepDeadline;
-    private static final long SLEEP_FADE_DURATION_MS = 10_000L;
-    private static final long SLEEP_FADE_UPDATE_MS = 100L;
-    private int volumeBeforeFade = -1, pendingVolumeRestore = -1;
-    private int sleepStartSentence = -1, sleepFadeStartSentence = -1, completedSleepMinutes;
+    private int sleepStartSentence = -1, completedSleepMinutes;
+    // Set the moment the timer runs out and cleared by the stop it asks for. Between those two the reading
+    // is living on borrowed time: it finishes the sentence it is in the middle of and stops before the next.
+    private boolean stopAtSentenceEnd;
+    // What is left of a timer that is not counting, because the reading it was counting is not running.
+    // Nought means the timer is either counting or not there at all.
+    private long sleepHeldMillis;
     private String positionKeyUri = "", positionKey = "";
     private Voice cachedVoice;
     private String cachedVoiceName = "";
@@ -102,6 +111,8 @@ public class ReaderService extends Service implements TextToSpeech.OnInitListene
     // lost. Generous on purpose: a neural voice can take a second or two to produce its first sound, and
     // re-sending a sentence that was merely slow costs nothing but its opening words.
     private static final long SPEECH_START_TIMEOUT_MS = 5000L;
+    // Long enough for three words at the slowest speed the app offers, and harmless if it fires late.
+    private static final long ANNOUNCE_TIMEOUT_MS = 8000L;
     private boolean utteranceStarted;
     private boolean pausedByFocusLoss;
     private long utteranceSerial;
@@ -115,6 +126,15 @@ public class ReaderService extends Service implements TextToSpeech.OnInitListene
     private AudioManager audioManager;
     private AudioFocusRequest audioFocusRequest;
     private boolean hasAudioFocus;
+    // How long after an audio device appears a Play arriving from outside is taken to be that device
+    // announcing itself rather than a person asking for something.
+    //
+    // Two seconds, and deliberately short. A longer guard catches more of the devices that announce
+    // themselves late, but it also refuses the reader who has just put the headphones on and pressed the
+    // button on them - and that refusal is silent, which is the worst way for a setting to be wrong. The
+    // automatic Play arrives in the same breath as the connection; a person takes longer than two seconds
+    // to reach for a button. Devices that send their Play later than this get through, and that is the price.
+    private static final long EXTERNAL_PLAY_GUARD_MS = 2_000L;
     private long suppressExternalPlayUntil;
     private final Set<Integer> knownAudioOutputs = new HashSet<>();
     private final BroadcastReceiver becomingNoisyReceiver = new BroadcastReceiver() {
@@ -129,7 +149,7 @@ public class ReaderService extends Service implements TextToSpeech.OnInitListene
                 if (!knownAudioOutputs.add(device.getId())) continue;
                 if (isExternalAudioOutput(device)) newAccessory = true;
             }
-            if (newAccessory && getSharedPreferences("reader_settings", MODE_PRIVATE).getBoolean("prevent_device_autoplay", false)) suppressExternalPlayUntil = SystemClock.elapsedRealtime() + 3000L;
+            if (newAccessory && getSharedPreferences("reader_settings", MODE_PRIVATE).getBoolean("prevent_device_autoplay", false)) suppressExternalPlayUntil = SystemClock.elapsedRealtime() + EXTERNAL_PLAY_GUARD_MS;
         }
         @Override public void onAudioDevicesRemoved(AudioDeviceInfo[] removedDevices) {
             for (AudioDeviceInfo device : removedDevices) knownAudioOutputs.remove(device.getId());
@@ -235,8 +255,16 @@ public class ReaderService extends Service implements TextToSpeech.OnInitListene
     public boolean isReady() { return ready; }
     public MediaController getMediaController() { return mediaSession == null ? null : mediaSession.getController(); }
     public boolean isSleepRewindAvailable() { return sleepRewindAvailable; }
-    public long sleepRemainingMillis() { return sleepDeadline <= 0 ? 0 : Math.max(0, sleepDeadline - SystemClock.elapsedRealtime()); }
+    // A held timer answers with what it is holding, so the row under the player goes on offering to call it
+    // off and goes on saying how much of it is left. It simply stops going down.
+    public long sleepRemainingMillis() {
+        if (sleepHeldMillis > 0) return sleepHeldMillis;
+        return sleepDeadline <= 0 ? 0 : Math.max(0, sleepDeadline - SystemClock.elapsedRealtime());
+    }
     public int getCompletedSleepMinutes() { return completedSleepMinutes; }
+    // The few seconds between the timer running out and the sentence it is waiting for ending. Read only,
+    // so that the row under the player can hold still through them instead of emptying and filling again.
+    public boolean isStoppingAtSentenceEnd() { return stopAtSentenceEnd; }
     public synchronized List<EngineOption> getEngineOptions() { return new ArrayList<>(allEngines); }
     public void loadVoiceOptions(String engine, VoicesCallback callback) {
         String requested = engine == null ? "" : engine;
@@ -277,27 +305,40 @@ public class ReaderService extends Service implements TextToSpeech.OnInitListene
         if (sleepRewindAvailable) { clearSleepRewindState(); notifyState(); }
         if (!ready) { pendingPlay = true; return; }
         if (sentences.isEmpty()) { return; }
-        // The last sentence has already been read out; playing again would simply repeat it.
-        if (reachedEnd) { error(getString(R.string.no_more_text)); return; }
+        // Play at the end of a document is not a request to hear the last sentence again - there is nothing
+        // after it to hear. It is a request to hear the document, and the only part of it left unheard is the
+        // beginning. So the reading goes back there and says where it has gone, rather than refusing with a
+        // message. The announcement is the same wording the More menu uses for the same journey.
+        //
+        // Only the end reached by reading counts. Walking to the last sentence by hand, or dragging the
+        // slider to it, leaves reachedEnd false and Play does there what it does anywhere else.
+        if (reachedEnd) { reachedEnd = false; current = 0; savePosition(); announceRestart = true; }
         if (captureSleepStartOnPlay) { sleepStartSentence = current; captureSleepStartOnPlay = false; }
         // Anything already waiting to be spoken is dropped first. Moving a sentence leaves a start waiting
         // a moment, so pressing Play inside that moment used to speak the sentence, then speak it again
         // when the waiting start came round.
         speechHandler.removeCallbacksAndMessages(null);
         applySettings(); transientRetries = 0; engineRestarts = 0; interruptedRetries = 0; pausedByFocusLoss = false; playing = true;
-        if (!requestAudioFocus()) { playing = false; notifyState(); updateNotification(); return; }
+        if (!requestAudioFocus()) { playing = false; announceRestart = false; notifyState(); updateNotification(); return; }
         startSilentPlayback(); promoteMediaSession(); updateMediaSession(); startService(new Intent(this, ReaderService.class)); startForeground(NOTIFICATION_ID, notification());
+        // Armed only here, once the reading is really under way. A Play that could not get hold of the sound
+        // returns above, and a timer armed before that point would be counting over the silence it failed to
+        // break.
+        if (sleepHeldMillis > 0) armSleepTimer(sleepHeldMillis);
         speakCurrent();
     }
     public void pause() { pausedByFocusLoss = false; pause(true); }
     private void pause(boolean releaseFocus) {
-        pendingPlay = false; playing = false; activeUtterance = ""; utteranceSerial++; speechHandler.removeCallbacksAndMessages(null); if (tts != null) tts.stop(); stopSilentPlayback();
-        restoreVolumeAfterFade(); if (releaseFocus) abandonAudioFocus(); savePosition(); if (!sentences.isEmpty()) updateNotification(); notifyState();
+        pendingPlay = false; playing = false; announceRestart = false; activeUtterance = ""; utteranceSerial++; speechHandler.removeCallbacksAndMessages(null); if (tts != null) tts.stop(); stopSilentPlayback();
+        // A timer that ran out while a sentence was still being spoken is owed a stop. If the reader stops
+        // first, the debt is settled here rather than left waiting for a sentence that may never finish.
+        if (stopAtSentenceEnd) finishSleepTimer(); else holdSleepTimer();
+        if (releaseFocus) abandonAudioFocus(); savePosition(); if (!sentences.isEmpty()) updateNotification(); notifyState();
     }
     public void move(int delta) {
         // Moving cancels whatever the previous step left pending. Without this, stopping a sentence number
         // that is still being announced counts as "finished" and starts the reading in the middle of a new
-        boolean resume = playing; reachedEnd = false; playing = false; activeUtterance = ""; utteranceSerial++; speechHandler.removeCallbacksAndMessages(null); if (tts != null) tts.stop();
+        boolean resume = playing; reachedEnd = false; announceRestart = false; playing = false; activeUtterance = ""; utteranceSerial++; speechHandler.removeCallbacksAndMessages(null); if (tts != null) tts.stop();
         if (!sentences.isEmpty()) current = Math.max(0, Math.min(current + delta, sentences.size() - 1));
         // Stopping the engine and starting it again is how a move is carried out, but it is not what is
         // happening as far as anyone watching is concerned: the reading was running before the move and
@@ -308,7 +349,7 @@ public class ReaderService extends Service implements TextToSpeech.OnInitListene
         if (resume) speechHandler.postDelayed(this::speakCurrent, SEEK_SETTLE_MS); else updateNotification();
     }
     public void seekTo(int index) {
-        reachedEnd = false; playing = false; activeUtterance = ""; utteranceSerial++; speechHandler.removeCallbacksAndMessages(null); if (tts != null) tts.stop(); stopSilentPlayback();
+        reachedEnd = false; announceRestart = false; playing = false; activeUtterance = ""; utteranceSerial++; speechHandler.removeCallbacksAndMessages(null); if (tts != null) tts.stop(); stopSilentPlayback();
         if (!sentences.isEmpty()) current = Math.max(0, Math.min(index, sentences.size() - 1));
         savePosition(); notifyState(); updateNotification();
     }
@@ -319,8 +360,17 @@ public class ReaderService extends Service implements TextToSpeech.OnInitListene
         else { if (ready) applySettings(); if (playAfterUpdate) play(); }
     }
     public void setSleepMinutes(int minutes) {
-        sleepHandler.removeCallbacksAndMessages(null); restoreVolumeAfterFade(); clearSleepRewindState(); sleepFadeStartSentence = -1; captureSleepStartOnPlay = minutes > 0; sleepDeadline = minutes <= 0 ? 0 : SystemClock.elapsedRealtime() + minutes * 60_000L;
-        if (sleepDeadline > 0) sleepHandler.postDelayed(this::beginSleepFade, Math.max(0, minutes * 60_000L - SLEEP_FADE_DURATION_MS));
+        sleepHandler.removeCallbacksAndMessages(null); clearSleepRewindState(); stopAtSentenceEnd = false; captureSleepStartOnPlay = minutes > 0;
+        sleepDeadline = 0; sleepHeldMillis = 0;
+        // A sleep timer measures listening, not time. Set over a reading that is not running it waits, and
+        // starts counting at the first Play; a reading stopped halfway through freezes it where it stands
+        // and it goes on from there. It used to count either way, which meant a timer set on a book that was
+        // paused ran itself out over silence and then offered to go back into a reading that had not moved.
+        if (minutes > 0) { if (playing) armSleepTimer(minutes * 60_000L); else sleepHeldMillis = minutes * 60_000L; }
+        // Where to come back to is taken now if the reading is already running, and at the next Play if it is
+        // not. Waiting for a Play that never comes is what left a timer set over a book already being read
+        // with no starting point at all, and the offer to go back never appeared when that timer ran out.
+        if (minutes > 0 && playing) { sleepStartSentence = current; captureSleepStartOnPlay = false; }
         if (minutes > 0) completedSleepMinutes = minutes;
         notifyState();
     }
@@ -775,20 +825,107 @@ public class ReaderService extends Service implements TextToSpeech.OnInitListene
     private void speakCurrent() {
         if (!playing || current >= sentences.size()) { pause(); return; }
         if (!ready || tts == null) { pendingPlay = true; return; }
+        if (announceRestart) { announceRestart = false; announceReturnToStart(); return; }
         Range range = sentences.get(current);
         activeUtterance = "sentence-" + current + "-" + (++utteranceSerial); String utterance = activeUtterance; utteranceStarted = false;
         android.content.SharedPreferences p = getSharedPreferences("reader_settings", MODE_PRIVATE);
         Bundle parameters = new Bundle(); parameters.putFloat(TextToSpeech.Engine.KEY_PARAM_VOLUME, p.getInt(setting("volume_percent"), 50) / 100f);
         addVoiceParam(parameters, p.getString(voicePreferenceKey(profile, activeEngine), ""));
-        int result = tts.speak(text.substring(range.start, range.end).trim(), TextToSpeech.QUEUE_FLUSH, parameters, utterance);
+        String spoken = p.getBoolean(SKIP_DECORATIVE, false)
+            ? speakable(text.substring(range.start, range.end))
+            : text.substring(range.start, range.end).trim();
+        // A sentence that was nothing but decoration - a row of asterisks between two chapters - has nothing
+        // left in it once the decoration is gone. An empty utterance is not handed to the engine: some
+        // engines answer one with silence and never report it finished, and the reading stops there for good.
+        if (spoken.isEmpty()) { skipSilentSentence(); return; }
+        int result = tts.speak(spoken, TextToSpeech.QUEUE_FLUSH, parameters, utterance);
         if (result == TextToSpeech.ERROR) { waitForEngine(utterance); return; }
         speechHandler.postDelayed(() -> sentenceNeverStarted(utterance), SPEECH_START_TIMEOUT_MS);
         notifyState(); updateNotification();
     }
+    // Nothing to say, so nothing is said - but the reading has to go on, and it goes on exactly the way it
+    // does after a sentence that was spoken: the position moves, it is saved, and the end of the text is
+    // still the end of the text. Posted rather than called, so a run of decorative lines does not build a
+    // stack, and so a sleep timer that has run out is honoured here as it is after any other sentence.
+    private void skipSilentSentence() {
+        activeUtterance = ""; current++; savePosition();
+        if (current >= sentences.size()) { current = Math.max(0, sentences.size() - 1); reachedEnd = true; announceEnd(); return; }
+        notifyState(); updateNotification();
+        if (stopAtSentenceEnd) { finishSleepTimer(); return; }
+        speechHandler.post(this::speakCurrent);
+    }
+
+    // What is handed to the engine when the reader has asked for the decoration to be left out. The document
+    // itself is never touched: this works on a copy of one sentence, so every offset, the highlight, search,
+    // the contents and the bookmarks go on describing the text as it was written.
+    //
+    // The line between the two kinds of character is what the engine does with them. Standard punctuation is
+    // how a synthesizer knows where to pause and where to lift its voice, so all of it stays - full stops and
+    // commas, colons and semicolons, question and exclamation marks, quotes of every shape, apostrophes,
+    // brackets, dashes between words, the slash, the percent sign, currency and digits. What goes is what
+    // carries no language: the marks a document uses to draw itself. Those are read out by name, and an
+    // asterisk announced in the middle of a sentence is worse than no asterisk at all.
+    //
+    // Whole categories are used rather than a list of characters, because a list only ever covers the
+    // documents somebody has already opened. Symbols, arrows, box drawing, ticks, stars and every emoji are
+    // one category; the underscore is another; the invisible joiners and selectors that hold an emoji
+    // together are a third. Named on top of those are the few that Unicode files with ordinary punctuation
+    // but that no sentence needs spoken: the asterisk, the hash, the backslash, the bullet and its relatives.
+    private static final String DROPPED = "*#\\\u2022\u00b7\u2023\u25e6\u25aa\u25ab\u00a7\u00b6\u2020\u2021\u203b\u00b0\u00a4";
+    static String speakable(String sentence) {
+        StringBuilder out = new StringBuilder(sentence.length());
+        int i = 0;
+        while (i < sentence.length()) {
+            int code = sentence.codePointAt(i);
+            int width = Character.charCount(code);
+            // Invisible to begin with, so taking one out must not leave a gap where there was none: a soft
+            // hyphen sits inside a word and a joiner holds one emoji together.
+            if (invisible(code)) { i += width; continue; }
+            if (drops(code)) out.append(' ');
+            // Three or more of the same dash in a row is a rule across the page, not a dash between two
+            // words. One dash and two are left alone: those are punctuation and are read as a pause.
+            else if (isDash(code) && runLength(sentence, i, code) >= 3) {
+                out.append(' ');
+                i += runLength(sentence, i, code) * width;
+                continue;
+            }
+            else out.appendCodePoint(code);
+            i += width;
+        }
+        // Whatever was taken out left a gap behind it, and a gap is not a pause the engine should hear.
+        return out.toString().replaceAll("\\s+", " ").trim();
+    }
+    // Filed by Unicode among the symbols, but a word in both of the app's languages and read out as one.
+    private static final String KEPT = "№";
+    private static boolean invisible(int code) {
+        return Character.getType(code) == Character.FORMAT || (code >= 0xFE00 && code <= 0xFE0F);
+    }
+    private static boolean drops(int code) {
+        if (KEPT.indexOf(code) >= 0) return false;
+        if (DROPPED.indexOf(code) >= 0) return true;
+        switch (Character.getType(code)) {
+            case Character.OTHER_SYMBOL:
+            case Character.MATH_SYMBOL:
+            case Character.MODIFIER_SYMBOL:
+            case Character.CONNECTOR_PUNCTUATION:
+                return true;
+            default:
+                return false;
+        }
+    }
+    private static boolean isDash(int code) { return Character.getType(code) == Character.DASH_PUNCTUATION; }
+    private static int runLength(String value, int at, int code) {
+        int width = Character.charCount(code), count = 0;
+        for (int i = at; i + width <= value.length() && value.codePointAt(i) == code; i += width) count++;
+        return count;
+    }
+
     private void finishCurrentSentence(String utterance) {
         if (!playing || !utterance.equals(activeUtterance)) return;
         transientRetries = 0; engineRestarts = 0; interruptedRetries = 0; activeUtterance = ""; current++; savePosition();
         if (current >= sentences.size()) { current = Math.max(0, sentences.size() - 1); reachedEnd = true; announceEnd(); return; }
+        // The sentence the timer was waiting for is over. The next one is never started.
+        if (stopAtSentenceEnd) { finishSleepTimer(); return; }
         int delay = getSharedPreferences("reader_settings", MODE_PRIVATE).getInt(setting("sentence_pause"), 0);
         speechHandler.postDelayed(ReaderService.this::speakCurrent, delay);
     }
@@ -796,7 +933,36 @@ public class ReaderService extends Service implements TextToSpeech.OnInitListene
     // article is three minutes long and its end is obvious from the fact that the voice stopped - announcing
     // it there is the app talking about itself. Pressing Play past the end still says there is no more text,
     // in both cases.
+    // Spoken in the voice of what is being read, and followed by the reading itself. Whatever the engine
+    // answers - done, stopped, or an error - the beginning is read next: an announcement that failed is a
+    // reason to say nothing, never a reason to leave the reader with Pause showing over silence.
+    // The announcement is over, one way or another. A Pause pressed during it has already turned playing
+    // off, and then nothing follows it - the reader asked for the reading to stop, not to start at the top.
+    private void startAfterAnnouncement() {
+        activeUtterance = "";
+        if (!playing) return;
+        speakCurrent();
+    }
+    private void announceReturnToStart() {
+        savePosition(); notifyState(); updateNotification();
+        activeUtterance = RESTART_UTTERANCE;
+        android.content.SharedPreferences p = getSharedPreferences("reader_settings", MODE_PRIVATE);
+        Bundle parameters = new Bundle(); parameters.putFloat(TextToSpeech.Engine.KEY_PARAM_VOLUME, p.getInt(setting("volume_percent"), 50) / 100f);
+        addVoiceParam(parameters, p.getString(voicePreferenceKey(profile, activeEngine), ""));
+        if (tts == null || tts.speak(getString(R.string.go_to_start), TextToSpeech.QUEUE_FLUSH, parameters, RESTART_UTTERANCE) == TextToSpeech.ERROR) {
+            speechHandler.post(this::speakCurrent); return;
+        }
+        // The engine can take an utterance and then neither speak it nor report anything at all - the same
+        // silence that waitForEngine exists for. Here it would leave Pause showing over nothing, with the
+        // reading never started, so a backstop starts it anyway. It does nothing if the announcement has
+        // already been answered, because answering it is what clears activeUtterance.
+        speechHandler.postDelayed(() -> { if (RESTART_UTTERANCE.equals(activeUtterance)) startAfterAnnouncement(); }, ANNOUNCE_TIMEOUT_MS);
+    }
     private void announceEnd() {
+        // The document is over, so a timer counting towards the end of the reading has nothing left to count
+        // towards. It used to go on ticking under the player over a book that had finished, and then run out
+        // and offer to go back into a reading that had already stopped.
+        cancelSleepTimer();
         savePosition(); notifyState();
         if (WEB_PROFILE.equals(profile)) { pause(); return; }
         activeUtterance = END_UTTERANCE;
@@ -1060,9 +1226,9 @@ public class ReaderService extends Service implements TextToSpeech.OnInitListene
         tts.setAudioAttributes(new AudioAttributes.Builder().setUsage(AudioAttributes.USAGE_MEDIA).setContentType(AudioAttributes.CONTENT_TYPE_SPEECH).build());
         tts.setOnUtteranceProgressListener(new UtteranceProgressListener() {
             @Override public void onStart(String id) { handler.post(() -> { if (id.equals(activeUtterance)) { utteranceStarted = true; refreshSilentPlaybackPriority(); } }); }
-            @Override public void onDone(String id) { handler.post(() -> { if (id.startsWith(MEASURE_UTTERANCE)) measured(id); else if (isPreview(id)) previewFinished(id); else if (END_UTTERANCE.equals(id)) pause(); else finishCurrentSentence(id); }); }
-            @Override public void onStop(String id, boolean interrupted) { handler.post(() -> { if (isPreview(id)) { previewStopped(id, interrupted); return; } if (END_UTTERANCE.equals(id)) { pause(); return; } if (playing && id.equals(activeUtterance)) waitForEngine(id); }); }
-            @Override public void onError(String id) { handler.post(() -> { if (id.startsWith(MEASURE_UTTERANCE)) retrySentence(); else if (isPreview(id)) previewFinished(id); else if (END_UTTERANCE.equals(id)) pause(); else if (interruptedRetries > 0) waitForEngine(id); else retryCurrentSentence(id); }); }
+            @Override public void onDone(String id) { handler.post(() -> { if (id.startsWith(MEASURE_UTTERANCE)) measured(id); else if (isPreview(id)) previewFinished(id); else if (END_UTTERANCE.equals(id)) pause(); else if (RESTART_UTTERANCE.equals(id)) startAfterAnnouncement(); else finishCurrentSentence(id); }); }
+            @Override public void onStop(String id, boolean interrupted) { handler.post(() -> { if (isPreview(id)) { previewStopped(id, interrupted); return; } if (END_UTTERANCE.equals(id)) { pause(); return; } if (RESTART_UTTERANCE.equals(id)) { startAfterAnnouncement(); return; } if (playing && id.equals(activeUtterance)) waitForEngine(id); }); }
+            @Override public void onError(String id) { handler.post(() -> { if (id.startsWith(MEASURE_UTTERANCE)) retrySentence(); else if (isPreview(id)) previewFinished(id); else if (END_UTTERANCE.equals(id)) pause(); else if (RESTART_UTTERANCE.equals(id)) startAfterAnnouncement(); else if (interruptedRetries > 0) waitForEngine(id); else retryCurrentSentence(id); }); }
         });
         notifyState(); if (pendingPlay) { pendingPlay = false; play(); }
     }
@@ -1094,6 +1260,20 @@ public class ReaderService extends Service implements TextToSpeech.OnInitListene
     private void notifyState() { updateMediaSession(); if (listener != null) listener.onPlaybackState(current, sentences.size(), playing); }
     private void error(String value) { if (listener != null) listener.onPlaybackError(value); }
 
+    // Every Play that comes from outside the app arrives here, and nothing else does. Play pressed in Vox
+    // TXT calls play() straight through the binder, and so does the Play in our own notification, so neither
+    // is ever refused - which matters, because a guard that could swallow the reader's own button would be
+    // worse than the thing it guards against.
+    //
+    // Outside means the media session: a headset button, a car, a watch, a Bluetooth remote, another app's
+    // controls. Those all reach the session, and a key event reaches onMediaButtonEvent rather than onPlay -
+    // which is how the guard came to be standing in a doorway nobody used. It stands in both now.
+    private void playFromOutside() {
+        if (!getSharedPreferences("reader_settings", MODE_PRIVATE).getBoolean("prevent_device_autoplay", false)) { play(); return; }
+        if (SystemClock.elapsedRealtime() < suppressExternalPlayUntil) return;
+        play();
+    }
+
     private void createMediaSession() {
         audioManager = (AudioManager)getSystemService(AUDIO_SERVICE);
         mediaSession = new MediaSession(this, "Vox TXT");
@@ -1104,7 +1284,7 @@ public class ReaderService extends Service implements TextToSpeech.OnInitListene
         Intent mediaButtons = new Intent(Intent.ACTION_MEDIA_BUTTON).setClass(this, MediaButtonReceiver.class);
         mediaSession.setMediaButtonReceiver(PendingIntent.getBroadcast(this, 11, mediaButtons, PendingIntent.FLAG_UPDATE_CURRENT | PendingIntent.FLAG_MUTABLE));
         mediaSession.setCallback(new MediaSession.Callback() {
-            @Override public void onPlay() { if (!getSharedPreferences("reader_settings", MODE_PRIVATE).getBoolean("prevent_device_autoplay", false) || SystemClock.elapsedRealtime() >= suppressExternalPlayUntil) play(); }
+            @Override public void onPlay() { playFromOutside(); }
             @Override public void onPause() { pause(); }
             @Override public void onStop() { pause(); }
             @Override public void onSkipToPrevious() { move(-1); }
@@ -1114,8 +1294,8 @@ public class ReaderService extends Service implements TextToSpeech.OnInitListene
                 if (event == null || event.getAction() != KeyEvent.ACTION_DOWN || event.getRepeatCount() != 0) return super.onMediaButtonEvent(mediaButtonIntent);
                 switch (event.getKeyCode()) {
                     case KeyEvent.KEYCODE_MEDIA_PLAY_PAUSE:
-                    case KeyEvent.KEYCODE_HEADSETHOOK: if (playing) pause(); else play(); return true;
-                    case KeyEvent.KEYCODE_MEDIA_PLAY: play(); return true;
+                    case KeyEvent.KEYCODE_HEADSETHOOK: if (playing) pause(); else playFromOutside(); return true;
+                    case KeyEvent.KEYCODE_MEDIA_PLAY: playFromOutside(); return true;
                     case KeyEvent.KEYCODE_MEDIA_PAUSE: pause(); return true;
                     case KeyEvent.KEYCODE_MEDIA_NEXT: move(1); return true;
                     case KeyEvent.KEYCODE_MEDIA_PREVIOUS: move(-1); return true;
@@ -1157,63 +1337,69 @@ public class ReaderService extends Service implements TextToSpeech.OnInitListene
         if (audioFocusRequest != null) audioManager.abandonAudioFocusRequest(audioFocusRequest);
         hasAudioFocus = false;
     }
-    // The fade is the 1.0-beta2 one, unchanged: the device volume falls step by step over the ten seconds.
-    // Everything tried instead of it - a gain effect on the speech session, a scheduled curve - sounded
-    // worse on a real phone. The only additions are the guards around setStreamVolume().
-    private void beginSleepFade() {
+    // The timer has run out. Nothing is cut off and no volume is touched: the sentence being spoken is
+    // allowed to finish and the reading stops before the next one starts, which is a few seconds past the
+    // minute asked for and is the whole of the difference. A timer that runs out over a reading already
+    // stopped has nothing to wait for and completes at once.
+    //
+    // What stood here until 1.1 was a ten second fade of the device volume, and it is worth saying why it
+    // went. It cut a sentence in half and then had to step back a sentence to put back what it had cut; it
+    // borrowed the volume of the whole phone and had to remember to give it back even if the process was
+    // killed halfway through; and Do Not Disturb could refuse it the change in the middle of the fade.
+    private void armSleepTimer(long millis) {
+        sleepHeldMillis = 0;
+        sleepDeadline = SystemClock.elapsedRealtime() + millis;
+        sleepHandler.postDelayed(this::sleepTimeReached, millis);
+    }
+    // The reading has stopped, so the counting stops with it and what is left is kept. Called from pause(),
+    // which is every way the reading can stop.
+    private void holdSleepTimer() {
         if (sleepDeadline <= 0) return;
-        if (!playing) { sleepHandler.postDelayed(this::finishSleepTimer, Math.max(0, sleepDeadline - SystemClock.elapsedRealtime())); return; }
-        sleepFadeStartSentence = Math.max(0, current - 1);
-        volumeBeforeFade = audioManager.getStreamVolume(AudioManager.STREAM_MUSIC); rememberFadeVolume(volumeBeforeFade); fadeSleepStep();
+        sleepHeldMillis = Math.max(1L, sleepDeadline - SystemClock.elapsedRealtime());
+        sleepDeadline = 0;
+        sleepHandler.removeCallbacksAndMessages(null);
     }
-    private void fadeSleepStep() {
-        long remaining = sleepDeadline - SystemClock.elapsedRealtime();
-        if (remaining <= 0) { setMusicVolume(0); finishSleepTimer(); return; }
-        if (!playing || volumeBeforeFade < 0) { sleepHandler.postDelayed(this::finishSleepTimer, remaining); return; }
-        double progress = 1.0 - Math.min(SLEEP_FADE_DURATION_MS, remaining) / (double)SLEEP_FADE_DURATION_MS;
-        int faded = Math.max(0, (int)Math.round(volumeBeforeFade * (1.0 - progress)));
-        if (!setMusicVolume(faded)) { finishSleepTimer(); return; }
-        sleepHandler.postDelayed(this::fadeSleepStep, Math.min(SLEEP_FADE_UPDATE_MS, remaining));
+    // Called off rather than completed, so nothing is offered afterwards: the timer did not run its course,
+    // the book simply ended first.
+    private void cancelSleepTimer() {
+        if (sleepDeadline <= 0 && sleepHeldMillis <= 0 && !stopAtSentenceEnd && !sleepRewindAvailable) return;
+        sleepHandler.removeCallbacksAndMessages(null);
+        sleepDeadline = 0; sleepHeldMillis = 0; stopAtSentenceEnd = false;
+        clearSleepRewindState();
     }
-    // Do Not Disturb can forbid volume changes; in that case give the stream back to the user and let the
-    // timer stop playback without a fade rather than crashing halfway through it.
-    private boolean setMusicVolume(int value) {
-        if (audioManager == null) return false;
-        try { audioManager.setStreamVolume(AudioManager.STREAM_MUSIC, value, 0); return true; }
-        catch (SecurityException denied) { volumeBeforeFade = -1; forgetFadeVolume(); return false; }
+    private void sleepTimeReached() {
+        if (sleepDeadline <= 0) return;
+        if (playing && !sentences.isEmpty()) { stopAtSentenceEnd = true; return; }
+        finishSleepTimer();
     }
+    // Cleared before the stop rather than after it, because pause() asks this same question and would
+    // otherwise ask again for the stop it is already carrying out.
     private void finishSleepTimer() {
         sleepHandler.removeCallbacksAndMessages(null);
         sleepDeadline = 0;
-        int returnSentence = sleepFadeStartSentence;
-        int restoreVolume = volumeBeforeFade;
-        volumeBeforeFade = -1;
+        sleepHeldMillis = 0;
+        stopAtSentenceEnd = false;
         pause();
-        if (returnSentence >= 0 && !sentences.isEmpty()) { current = Math.min(returnSentence, sentences.size() - 1); savePosition(); }
-        sleepFadeStartSentence = -1;
+        // Nothing was interrupted, so there is nothing to put back: the reading stands at the sentence it
+        // had not started. The offer to go back by the minutes the timer ran is a separate thing and stays.
         sleepRewindAvailable = sleepStartSentence >= 0 && completedSleepMinutes > 0;
         persistSleepRewindState();
         notifyState();
-        // Short technical pause so the tail of the interrupted sentence is not heard again at full volume.
-        if (restoreVolume >= 0) { pendingVolumeRestore = restoreVolume; sleepHandler.postDelayed(this::flushVolumeRestore, 250L); }
     }
-    // Called from pause(), so stopping in the middle of a fade-out hands the device volume straight back.
-    private void restoreVolumeAfterFade() {
-        flushVolumeRestore();
-        if (volumeBeforeFade >= 0) { setMusicVolume(volumeBeforeFade); volumeBeforeFade = -1; forgetFadeVolume(); }
+    // Do Not Disturb can forbid a volume change, so it is asked rather than assumed. Kept for
+    // restoreVolumeAfterCrash alone; when that goes, this goes with it.
+    private boolean setMusicVolume(int value) {
+        if (audioManager == null) return false;
+        try { audioManager.setStreamVolume(AudioManager.STREAM_MUSIC, value, 0); return true; }
+        catch (SecurityException denied) { return false; }
     }
-    // The delayed restore lives on sleepHandler, which any new timer clears - never leave the device muted.
-    private void flushVolumeRestore() {
-        if (pendingVolumeRestore < 0) return;
-        int value = pendingVolumeRestore; pendingVolumeRestore = -1; setMusicVolume(value); forgetFadeVolume();
-    }
-    private void rememberFadeVolume(int value) { getSharedPreferences(SLEEP_STATE, MODE_PRIVATE).edit().putInt("fade_volume", value).apply(); }
-    private void forgetFadeVolume() { getSharedPreferences(SLEEP_STATE, MODE_PRIVATE).edit().remove("fade_volume").apply(); }
-    // If the process was killed mid fade-out the device is left quiet; put the volume back on next start.
+    // Left behind by the fade that 1.0 and the betas had: a process killed in the middle of one gave the
+    // device back quiet. There are phones carrying that key right now, so this ships once more in the
+    // release that meets them. Delete it, and setMusicVolume with it, after 1.1.
     private void restoreVolumeAfterCrash() {
         int stored = getSharedPreferences(SLEEP_STATE, MODE_PRIVATE).getInt("fade_volume", -1);
         if (stored < 0) return;
-        forgetFadeVolume();
+        getSharedPreferences(SLEEP_STATE, MODE_PRIVATE).edit().remove("fade_volume").apply();
         if (audioManager != null && audioManager.getStreamVolume(AudioManager.STREAM_MUSIC) < stored) setMusicVolume(stored);
     }
     private void persistSleepRewindState() {
@@ -1273,7 +1459,7 @@ public class ReaderService extends Service implements TextToSpeech.OnInitListene
         return b.build();
     }
     private void updateNotification() { if (!sentences.isEmpty()) ((NotificationManager)getSystemService(NOTIFICATION_SERVICE)).notify(NOTIFICATION_ID, notification()); }
-    @Override public void onDestroy() { setArmed(false); speechHandler.removeCallbacksAndMessages(null); handler.removeCallbacksAndMessages(null); sleepHandler.removeCallbacksAndMessages(null); lifecycleHandler.removeCallbacksAndMessages(null); pause(); stopPreview(); flushVolumeRestore(); stopSilentPlayback(); if (audioManager != null) audioManager.unregisterAudioDeviceCallback(audioDeviceCallback); try { unregisterReceiver(becomingNoisyReceiver); } catch (IllegalArgumentException ignored) {} if (mediaSession != null) mediaSession.release(); if (tts != null) tts.shutdown(); super.onDestroy(); }
+    @Override public void onDestroy() { setArmed(false); speechHandler.removeCallbacksAndMessages(null); handler.removeCallbacksAndMessages(null); sleepHandler.removeCallbacksAndMessages(null); lifecycleHandler.removeCallbacksAndMessages(null); pause(); stopPreview(); stopSilentPlayback(); if (audioManager != null) audioManager.unregisterAudioDeviceCallback(audioDeviceCallback); try { unregisterReceiver(becomingNoisyReceiver); } catch (IllegalArgumentException ignored) {} if (mediaSession != null) mediaSession.release(); if (tts != null) tts.shutdown(); super.onDestroy(); }
 
     public static class Range { public final int start, end; Range(int start, int end) { this.start = start; this.end = end; } }
 }

@@ -65,12 +65,24 @@
                 <data android:pathPattern=".*\\..*\\.epub" />
                 <data android:pathPattern=".*\\..*\\.docx" />
             </intent-filter>
-            <!-- Share from a browser. The browser sends the address as plain text, sometimes with the page
-                 title in front of it; the address is picked out of whatever arrives. -->
+            <!-- Share, which arrives carrying either of two things. A browser sends the address as plain
+                 text, sometimes with the page title in front of it, and the address is picked out of whatever
+                 arrives. A file manager or a cloud drive sends a file instead, and it comes as a stream rather
+                 than as text - so the types listed here are the same ones the two filters above accept, or the
+                 app is not offered at all for a book somebody wanted read. What the file really is still gets
+                 decided by looking inside it. SEND_MULTIPLE is deliberately not declared: this reads one book
+                 at a time, and offering to take a handful would promise something it does not do. -->
             <intent-filter>
                 <action android:name="android.intent.action.SEND" />
                 <category android:name="android.intent.category.DEFAULT" />
                 <data android:mimeType="text/plain" />
+                <data android:mimeType="text/*" />
+                <data android:mimeType="application/epub+zip" />
+                <data android:mimeType="application/x-fictionbook+xml" />
+                <data android:mimeType="application/fb2" />
+                <data android:mimeType="application/vnd.openxmlformats-officedocument.wordprocessingml.document" />
+                <data android:mimeType="application/zip" />
+                <data android:mimeType="application/octet-stream" />
             </intent-filter>
             <!-- Text selected inside another app. The toolbar that appears over a selection does not use the
                  share sheet at all; it lists apps that have offered to process text, which is a separate
