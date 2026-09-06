@@ -17,7 +17,8 @@
 4. In its last minute, the sleep timer button counts down in seconds instead of minutes.
 5. When a document duration has been calculated, the percentage above the progress bar is hidden, since the time above it says the same thing. The bar itself still reports the percentage as it moves.
 6. Choosing a value in a dropdown no longer moves the screen reader back onto the dropdown afterwards.
-7. The progress bar in the media player on the lock screen no longer shows a position. It could not be dragged, and the position it showed meant nothing.
+7. Interface text size and Document text size have been removed, and both are now fixed at the sizes the app was drawn for. They rearranged the screen at their far ends and were worth less than the trouble they caused.
+8. The progress bar in the media player on the lock screen no longer shows a position. It could not be dragged, and the position it showed meant nothing.
 
 ### Fixed
 

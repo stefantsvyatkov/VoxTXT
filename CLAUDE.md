@@ -138,6 +138,37 @@ nothing's own inside is touched. Two numbers are deliberately off the scale and 
 arithmetic: 10dp between the two menu buttons where the rows stand 12 apart, because a tall narrow gap reads
 wider than a long thin one. Both times the numbers were evened up instead, the screen looked worse.
 
+**A button has the same air above and below its lettering whether that is one line or two.** `breathe` works
+it out rather than taking a number: it is what the 56dp minimum already leaves around a single line, so a
+one-line button is unchanged and a wrapped one is the same button grown by a line. Two earlier tries both
+failed the same way. Zero vertical padding, which `compactButton` had, was invisible on one line and put the
+letters against the edges on two. A share of the text size was no better in the end: on one line the 56dp
+minimum did the deciding and left 18 points of air, on two the text filled that 56dp by itself and only the
+padding was left, which came to 8. Any helper that sets a button's padding afterwards must call `breathe`
+again, because it reads the font metrics and `compactButton` changes the text size.
+
+List rows are not buttons in this sense - `listRowButton` keeps its own dp(14) and the platform's row height -
+and they lose air the same way when a long file name wraps, 21 points down to 14. Left alone deliberately:
+matching them would add twenty points to every wrapped row and a list of long names is long enough already.
+
+**Two buttons in a row take the height of the taller; a label and a button in a row do not halve it.** Both
+are fixed rules with nothing measured, and both are there for a reason that survives the sizes being fixed:
+"Recent files" needs two lines in Bulgarian and would otherwise stand twenty points taller than "More", and a
+long sentence count needs more than half a row while "Navigation" needs less. `addSideBySide` is for two
+buttons and `addLabelAndButton` for the other case - two plain methods rather than one that asks what it has
+been given.
+
+**There is no text size setting, and putting one back means putting the measuring back with it.** Two sliders
+existed - the interface as a percentage and the reading in points - and they were taken out in 1.1 along with
+everything that had grown up around them: `uiSize`, the live preview that rescaled every view, and four
+helpers that measured a row and decided whether it still fitted. At their far ends the first screen rearranged
+itself, a heading was squeezed into a column three words wide and a button stood at twice the height of its
+neighbour, and each of those wanted a rule of its own. `DOCUMENT_TEXT_SIZE` is 24 and every other size in the
+app is the platform's. The keys they wrote, `interface_scale` and `font_size`, are cleaned up in `onCreate`.
+
+Anyone bringing them back should know what they cost: not the slider, but every row in the app having to work
+out where it goes.
+
 **A slider is drawn at the thickness it is given.** `thicken` pins the height of both layers, because a
 progress drawable is otherwise stretched to fill its row, and the same two lines of code produced a fatter
 bar on the player than in Options.
