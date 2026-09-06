@@ -90,7 +90,6 @@ public class MainActivity extends Activity implements ReaderService.Listener {
     private String lastTimerLabel;
     // What the timer button last said while a timer was running. Held so that the seconds between the time
     // running out and the sentence ending can go on saying it, even if the screen is rebuilt inside them.
-    private int shownTimerMinutes = 1;
     private SeekBar bookProgress;
     private ScrollView scroll;
     private View appRoot;
@@ -558,14 +557,12 @@ public class MainActivity extends Activity implements ReaderService.Listener {
     // What the player moves by. Sections are only on offer while something that declares them is open, so a
     // book chosen for its chapters and then closed does not leave the buttons moving by a unit the next
     // document has none of.
+    // Asked of the reader, so that the buttons on this screen and the buttons on the lock screen answer to
+    // the same rule. Without a reader there is nothing open to have sections, which is the same answer.
     private String navUnit() {
+        if (reader != null) return reader.navUnitInForce();
         String unit = getSettings().getString("nav_unit", "sentence");
-        // Sections are on offer only while something that declares them is open. What a document without them
-        // falls back to is the last unit chosen that any document can offer - so a book read by paragraphs,
-        // left for one read by sections and come back to, is still read by paragraphs.
-        if ("section".equals(unit) && (reader == null || !reader.hasSections()))
-            return getSettings().getString("nav_unit_plain", "sentence");
-        return unit;
+        return "section".equals(unit) ? getSettings().getString("nav_unit_plain", "sentence") : unit;
     }
     private boolean byParagraph() { return "paragraph".equals(navUnit()); }
     private boolean bySection() { return "section".equals(navUnit()); }
@@ -2557,11 +2554,32 @@ public class MainActivity extends Activity implements ReaderService.Listener {
     private boolean focusPickedTab;
     private View pickedTab;
     private java.util.function.Consumer<String> voiceTabSwitch;
-    private static final int RECENT_LIMIT = 20;
+    // Documents and pages remembered, and with them the number of readings kept in doccache - tidyKeptDocuments
+    // keeps a copy for every entry in the list and throws away the rest, so the two numbers are one number.
+    // Raised from twenty at 1.1: twenty was set when this opened one format, and a reader that carries five
+    // of them fills that in a fortnight. What it costs is storage inside the app: a Bulgarian novel comes to
+    // about a megabyte of text, so a full list is tens of megabytes, and all of it goes on uninstalling.
+    private static final int RECENT_LIMIT = 50;
+    // An entry pushed off the end of the list is let go of exactly as one removed by hand is - the same
+    // forgetBook, so there is one description of what it means to be rid of a document and not two that can
+    // drift apart. What was left behind before: the position, the bookmarks, the measured timings, and the
+    // permission to open the file. The permission is the one that mattered, because Android allows an app
+    // only so many - 128 on Android 10 and older, 512 after - and a book that cannot take one opens once
+    // from the picker and then says it is unavailable ever after.
+    //
+    // The loop no longer stops at the limit, because what falls past it is the whole point.
     private void addRecent(String list, String uri, String name) {
-        try { JSONArray old = new JSONArray(documents().getString(list, "[]")); JSONArray fresh = new JSONArray(); fresh.put(new JSONObject().put("uri", uri).put("name", name));
-            for (int i = 0; i < old.length() && fresh.length() < RECENT_LIMIT; i++) if (!uri.equals(old.getJSONObject(i).optString("uri"))) fresh.put(old.getJSONObject(i));
+        try {
+            JSONArray old = new JSONArray(documents().getString(list, "[]"));
+            JSONArray fresh = new JSONArray(); fresh.put(new JSONObject().put("uri", uri).put("name", name));
+            java.util.List<String> dropped = new ArrayList<>();
+            for (int i = 0; i < old.length(); i++) {
+                String had = old.getJSONObject(i).optString("uri");
+                if (uri.equals(had)) continue;
+                if (fresh.length() < RECENT_LIMIT) fresh.put(old.getJSONObject(i)); else if (!had.isEmpty()) dropped.add(had);
+            }
             documents().edit().putString(list, fresh.toString()).apply();
+            for (String gone : dropped) forgetBook(gone);
         } catch (JSONException ignored) {}
     }
     private RecentDocument keptAsRecent(String uri, Kept kept) {

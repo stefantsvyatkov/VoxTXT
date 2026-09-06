@@ -249,7 +249,33 @@ was in the manifest: the SEND filter declared `text/plain` alone, so the app was
 or an EPUB. Its types are now the ones the VIEW filters accept, and must be kept in step with them.
 `SEND_MULTIPLE` is deliberately not declared.
 
-**What was read out of a document is kept for the twenty documents in the list**, in `doccache/`, and the
+**Open with can match a file by its name; Share can only match it by its type.** An `ACTION_VIEW` intent
+carries the file as its data, so the second VIEW filter matches on `pathPattern` and rescues a file whose type
+the sender got wrong or did not know. An `ACTION_SEND` intent carries the file in `EXTRA_STREAM`, which an
+intent filter cannot look at, so the declared MIME types are the whole of it. That asymmetry, not a missing
+type, is why a format can arrive through Open with and be absent from the share sheet.
+
+Checked against the tables `MimeTypeMap` is actually built from - AOSP `external/mime-support/mime.types` and
+`frameworks/base/mime/java-res/android.mime.types`. They give `text/plain`, `application/epub+zip`,
+`application/zip` and the OOXML wordprocessingml type, all four declared here. **FB2 is in neither table**, so
+`getMimeTypeFromExtension("fb2")` is null and a sender falls back to `application/octet-stream`, which is why
+that one is declared and must stay. `application/x-zip-compressed` is declared because a downloaded file keeps
+the type its server sent and many servers send that; Android itself never produces it.
+
+**`application/txt` is declared because Samsung and Xiaomi hand it out for a shared .txt.** It is not a real
+type and is in none of Android's tables, and because it is not under `text/`, `text/*` never caught it. TXT
+was the one format missing from the share sheet on those phones while the other four were there - the others
+either use a standard type or fall back to `application/octet-stream`. Open with was never affected, which is
+the asymmetry above at work: it can fall back to matching the file name.
+
+**Falling off the end of the list means the same as being removed by hand.** `addRecent` calls `forgetBook`
+on whatever it pushes past `RECENT_LIMIT`, so there is one description of being rid of a document rather than
+two that drift apart. Before that, an entry that simply aged out left behind its position, its bookmarks, its
+measured timings and - the one that mattered - the persisted permission to open its file. Android allows an
+app 128 of those on Android 10 and older and 512 after; a book that cannot take one opens from the picker and
+then reports itself unavailable ever after, and the refusal is swallowed.
+
+**What was read out of a document is kept for every document in the list**, in `doccache/`, and the
 rule is the same as for the page cache: the file is the truth, the copy stands in for it. Size and modified
 time decide whether the copy is still the file; only an unreachable file is read from the copy regardless.
 Kept because a document handed over by another app has an address good for one moment, and because opening a
@@ -371,6 +397,13 @@ because a space there splits a word.
 **Never hand the engine an empty string.** Some engines answer one with silence and never report it finished,
 and the reading stops there for good. `skipSilentSentence` moves on instead, and honours a timer that has run
 out exactly as a spoken sentence would.
+
+**Which unit Previous and Next work in is decided in the service, by `navUnitInForce`.** A press can arrive
+from the lock screen, a headset or the notification when no screen of the app exists, so the rule cannot live
+where the buttons are; `MainActivity.navUnit` asks the service for it, so there is one rule rather than two
+that drift. Every way in - the notification actions, the session callbacks and the media keys - goes through
+`navStep`, and none of them may call `move` directly again: `move` is sentences, and sentences are only one of
+the three things Next can mean.
 
 ## Accessibility rules the user cares about
 

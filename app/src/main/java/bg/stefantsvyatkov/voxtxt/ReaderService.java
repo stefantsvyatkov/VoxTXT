@@ -175,8 +175,8 @@ public class ReaderService extends Service implements TextToSpeech.OnInitListene
             switch (intent.getAction()) {
                 case ACTION_PLAY: play(); break;
                 case ACTION_PAUSE: pause(); break;
-                case ACTION_PREVIOUS: move(-1); break;
-                case ACTION_NEXT: move(1); break;
+                case ACTION_PREVIOUS: navStep(-1); break;
+                case ACTION_NEXT: navStep(1); break;
                 case ACTION_STOP: shutdown(); break;
                 case Intent.ACTION_MEDIA_BUTTON:
                     // Started with startForegroundService(), so startForeground() must follow within a few
@@ -348,7 +348,12 @@ public class ReaderService extends Service implements TextToSpeech.OnInitListene
         savePosition(); notifyState();
         if (resume) speechHandler.postDelayed(this::speakCurrent, SEEK_SETTLE_MS); else updateNotification();
     }
+    // Held here as well as in pause(), because this is the other way the reading stops. Moving the progress
+    // slider by keyboard or by screen reader lands here and leaves the reading stopped without ever going
+    // through pause(), and a timer left counting over that is counting over silence. Whoever plays again
+    // arms it again, so a seek that carries straight on costs it nothing.
     public void seekTo(int index) {
+        holdSleepTimer();
         reachedEnd = false; announceRestart = false; playing = false; activeUtterance = ""; utteranceSerial++; speechHandler.removeCallbacksAndMessages(null); if (tts != null) tts.stop(); stopSilentPlayback();
         if (!sentences.isEmpty()) current = Math.max(0, Math.min(index, sentences.size() - 1));
         savePosition(); notifyState(); updateNotification();
@@ -481,6 +486,27 @@ public class ReaderService extends Service implements TextToSpeech.OnInitListene
     // the settle between taps, not reporting the momentary stop, stopping at either end - holds here without
     // being written a second time. Asking to go past the last paragraph lands on the last sentence, so that
     // whoever is holding the button down is told that there is nothing further.
+    // Which unit Previous and Next work in. Sections are on offer only while a document that declares them
+    // is open; what one without them falls back to is the last unit chosen that any document can offer, so a
+    // book read by paragraphs, left for one read by sections and come back to, is still read by paragraphs.
+    //
+    // The rule lives here rather than on the screen because the screen is not always there. A press on the
+    // lock screen, on a headset or in the notification arrives when no screen of this app exists, and it has
+    // to mean the same thing then as it does with the app open. MainActivity asks this too, so there is one
+    // rule and not two.
+    public String navUnitInForce() {
+        android.content.SharedPreferences p = getSharedPreferences("reader_settings", MODE_PRIVATE);
+        String unit = p.getString("nav_unit", "sentence");
+        if ("section".equals(unit) && !hasSections()) return p.getString("nav_unit_plain", "sentence");
+        return unit;
+    }
+    // One press of Previous or Next, wherever it came from.
+    public void navStep(int direction) {
+        String unit = navUnitInForce();
+        if ("section".equals(unit)) moveSection(direction);
+        else if ("paragraph".equals(unit)) moveParagraph(direction);
+        else move(direction);
+    }
     public void moveParagraph(int delta) {
         if (paragraphStart.isEmpty() || sentences.isEmpty()) { move(delta); return; }
         int wanted = paragraphOf(current) + delta;
@@ -1287,8 +1313,8 @@ public class ReaderService extends Service implements TextToSpeech.OnInitListene
             @Override public void onPlay() { playFromOutside(); }
             @Override public void onPause() { pause(); }
             @Override public void onStop() { pause(); }
-            @Override public void onSkipToPrevious() { move(-1); }
-            @Override public void onSkipToNext() { move(1); }
+            @Override public void onSkipToPrevious() { navStep(-1); }
+            @Override public void onSkipToNext() { navStep(1); }
             @Override public boolean onMediaButtonEvent(Intent mediaButtonIntent) {
                 KeyEvent event = mediaButtonIntent == null ? null : mediaButtonIntent.getParcelableExtra(Intent.EXTRA_KEY_EVENT);
                 if (event == null || event.getAction() != KeyEvent.ACTION_DOWN || event.getRepeatCount() != 0) return super.onMediaButtonEvent(mediaButtonIntent);
@@ -1297,8 +1323,8 @@ public class ReaderService extends Service implements TextToSpeech.OnInitListene
                     case KeyEvent.KEYCODE_HEADSETHOOK: if (playing) pause(); else playFromOutside(); return true;
                     case KeyEvent.KEYCODE_MEDIA_PLAY: playFromOutside(); return true;
                     case KeyEvent.KEYCODE_MEDIA_PAUSE: pause(); return true;
-                    case KeyEvent.KEYCODE_MEDIA_NEXT: move(1); return true;
-                    case KeyEvent.KEYCODE_MEDIA_PREVIOUS: move(-1); return true;
+                    case KeyEvent.KEYCODE_MEDIA_NEXT: navStep(1); return true;
+                    case KeyEvent.KEYCODE_MEDIA_PREVIOUS: navStep(-1); return true;
                     case KeyEvent.KEYCODE_MEDIA_STOP: pause(); return true;
                     default: return super.onMediaButtonEvent(mediaButtonIntent);
                 }
@@ -1316,8 +1342,24 @@ public class ReaderService extends Service implements TextToSpeech.OnInitListene
         if (mediaSession == null) return;
         long actions = PlaybackState.ACTION_PLAY | PlaybackState.ACTION_PAUSE | PlaybackState.ACTION_PLAY_PAUSE |
             PlaybackState.ACTION_STOP | PlaybackState.ACTION_SKIP_TO_PREVIOUS | PlaybackState.ACTION_SKIP_TO_NEXT;
+        // No position, and no speed to work one out from. The sentence number used to be handed over as the
+        // position, which the system reads as milliseconds - sentence five hundred meant half a second in -
+        // and it filled the bar the phone draws under the buttons with a number that meant nothing. The bar
+        // itself belongs to the phone and stays whatever is sent; what goes is the false number in it, and
+        // with no duration either it is inert. A speed of nought goes with it: left at one, a player would count on from the
+        // unknown position and draw a bar creeping along by itself. Whether the reading is running is said by
+        // the state, which is what controllers actually ask.
+        //
+        // Making the bar live was weighed and turned down. It would need a duration, and the only honest one
+        // is the measured reading time, which most books do not have; and the user tried the same bar in
+        // another app and found it moves in steps of five per cent and only by dragging, never by the screen
+        // reader's up and down. A control that cannot be worked without sight is not worth being honest in.
         mediaSession.setPlaybackState(new PlaybackState.Builder().setActions(actions)
-            .setState(playing ? PlaybackState.STATE_PLAYING : PlaybackState.STATE_PAUSED, current, playing ? 1f : 0f, SystemClock.elapsedRealtime()).build());
+            .setState(playing ? PlaybackState.STATE_PLAYING : PlaybackState.STATE_PAUSED, PlaybackState.PLAYBACK_POSITION_UNKNOWN, 0f, SystemClock.elapsedRealtime()).build());
+        // The name of the app under the title of the book, and it is there on purpose rather than by default.
+        // Leaving it out was tried: the phone then fills the line itself with the sentence being read, which
+        // changes on every sentence and gives the screen reader something new to say each time. A name said
+        // twice around the title is the smaller annoyance of the two, and it is the same name every time.
         mediaSession.setMetadata(new MediaMetadata.Builder().putString(MediaMetadata.METADATA_KEY_TITLE, title)
             .putString(MediaMetadata.METADATA_KEY_ARTIST, getString(R.string.app_name))
             .putLong(MediaMetadata.METADATA_KEY_TRACK_NUMBER, current + 1L)

@@ -74,8 +74,8 @@
     <string name="invalid_sentence">Въведете номер от 1 до %1$d.</string>
     <string name="no_text">Няма текст за четене</string>
     <string name="end_of_text">Край на текста.</string>
-    <string name="previous">Предишно</string>
-    <string name="next">Следващо</string>
+    <string name="previous">Предишен</string>
+    <string name="next">Следващ</string>
     <string name="previous_sentence">Предишно изречение</string>
     <string name="next_sentence">Следващо изречение</string>
     <string name="play_sentence">Пускане на четенето</string>

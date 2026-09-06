@@ -4,27 +4,31 @@
 
 ### New
 
-1. Skip decorative characters, a new setting in Reading, leaves out the characters a document uses to draw itself - asterisks, bullets, box drawing, ticks, arrows, emoji and the like - so they are no longer read out by name. Standard punctuation is kept, because the voice uses it for pauses and intonation. A line that is nothing but decoration is skipped.
-2. Play at the end of a document or a web page now says "Go to the beginning" and starts reading from the beginning, instead of reporting that there is no more text.
+1. Skip decorative characters, a new setting in Reading, leaves out the characters a document uses to draw itself - asterisks, bullets, box drawing, ticks, arrows and emoji - so they are no longer read out by name. Standard punctuation stays, because the voice uses it for pauses and intonation.
+2. Play at the end of a document or a web page now says "Go to the beginning" and starts reading from the beginning.
 3. Bookmarks, Recent files and Recent pages can now delete several entries at once. Select, at the top of the page, turns the entries into checkboxes and offers Select all and Delete underneath.
-4. After a sleep timer runs out, the button that cancelled it becomes New timer, offering another timer of the same length and starting the reading if it is stopped. Return by X minutes appears below it.
+4. After a sleep timer runs out, the button that cancelled it becomes New timer, offering another timer of the same length. Return by X minutes appears below it.
 
 ### Changed
 
-1. In its last minute, the sleep timer button counts down in whole seconds instead of minutes, from 59 down to 1.
-2. The sleep timer no longer fades the volume over the last ten seconds. It lets the current sentence finish and stops before the next one, so reading ends a few seconds after the time set and the volume of the device is never touched.
-3. When a document duration has been calculated, the percentage above the progress bar is hidden, since the time above it answers the same question. The bar itself still reports the percentage as it moves.
+1. Recent files and Recent pages now remember fifty documents and fifty pages instead of twenty.
+2. The sleep timer counts listening rather than time: it waits while the reading is stopped and goes on when it starts again.
+3. The sleep timer no longer fades the volume over the last ten seconds. It lets the current sentence finish and stops before the next one, so reading ends a few seconds after the time set.
+4. In its last minute, the sleep timer button counts down in seconds instead of minutes.
+5. When a document duration has been calculated, the percentage above the progress bar is hidden, since the time above it says the same thing. The bar itself still reports the percentage as it moves.
+6. Choosing a value in a dropdown no longer moves the screen reader back onto the dropdown afterwards.
+7. The progress bar in the media player on the lock screen no longer shows a position. It could not be dragged, and the position it showed meant nothing.
 
 ### Fixed
 
-1. Prevent automatic playback when an audio device connects now works. Play commands arriving as a media button bypassed the setting entirely, and the guard lasted three seconds, which is shorter than a Bluetooth device usually takes to connect and send one. It now covers every command from outside and lasts two seconds, which is long enough for a device announcing itself and short enough not to refuse a button pressed on purpose. Play pressed in the app or in the notification is never affected.
-2. Return by X minutes now appears after a sleep timer that was set while the book was already reading. Previously the timer had no starting point in that case and the offer never appeared.
-3. Sharing a file to Vox TXT now opens it. Share only ever looked for text, so a book sent from a cloud drive or a file manager was answered with "No web address was shared", and Vox TXT was not offered at all for formats other than plain text.
-4. A sleep timer is now cancelled when the document ends, instead of counting on over a book that has finished.
-5. A button that cannot be pressed now looks it: its lettering fades, instead of the button staying exactly as it looks when it can be pressed.
-6. The sleep timer counts listening rather than time. Set over a reading that is stopped it waits for the first Play, and a reading stopped halfway through freezes it where it stands.
-7. Choosing a value in a dropdown no longer takes the screen reader's focus back to the dropdown afterwards. The app left it where the reader had put it, which is steadier than the wait it used to make and never says anything twice.
-8. Choosing a theme or a language while a web page was open returned to the page instead of to the settings, and left the app liable to open the settings unasked on a later start.
+1. Previous and Next in the notification, on the lock screen and on headsets now follow the navigation type, as the buttons in the app do. They always moved by one sentence, whatever was chosen.
+2. Sharing a file to Vox TXT now opens it. Only web addresses and plain text were accepted before, so a book sent from a cloud drive or a file manager was refused.
+3. Prevent automatic playback when an audio device connects now works. Commands arriving from a headset bypassed the setting entirely.
+4. A document that drops off the end of Recent files is now forgotten properly, along with its position, bookmarks, measured duration and the permission to open its file.
+5. A sleep timer set while the book was already reading now offers Return by X minutes when it runs out.
+6. A sleep timer is now cancelled when the document ends, instead of counting on over a book that has finished.
+7. A button that cannot be pressed now looks it: its lettering fades.
+8. Choosing a theme or a language while a web page was open returned to the page instead of to the settings.
 9. Cookies, storage and cache left behind by a web page opened in the app are now cleared as soon as the page has been read.
 
 ## Changes in 1.0
