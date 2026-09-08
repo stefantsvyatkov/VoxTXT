@@ -1,8 +1,14 @@
 # Vox TXT — notes for whoever works on this next
 
-A TTS reader for blind and screen-reader users, aimed at Google Play. The user documentation is in
+A TTS reader for documents and web pages, aimed at Google Play. The user documentation is in
 `docs/manual-bg.txt` (behaviour) and `docs/features-bg.txt` (list). This file holds only what those two do
 not say: decisions that look arbitrary from the code, and traps that have already been fallen into once.
+
+**Accessibility is built in, but this is not an app only for blind people.** It is for anyone who wants a
+clean, light and capable reader of documents and web pages, and it is described that way in the README. What
+follows about screen readers, contrast and announcements is how that is achieved and who tests it - not who
+it is for. A change that would make the app worse for a sighted reader is not excused by being good for a
+screen reader, and the reverse holds just as firmly.
 
 The user writes and expects replies in Bulgarian.
 
